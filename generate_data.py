@@ -2,7 +2,6 @@ import yfinance as yf
 import json
 import os
 
-# Your stock universe (simplified for the script, but add all your symbols here)
 # The complete list of NSE symbols matching your React Dashboard
 UNIVERSE_SYMBOLS = [
     "^NSEI", # Nifty 50 Benchmark
@@ -108,19 +107,47 @@ UNIVERSE_SYMBOLS = [
     "POWERGRID.NS", "RECLTD.NS", "PFC.NS", "ADANIENSOL.NS"
 ]
 
+# The Translation Dictionary for Yahoo's weird spellings
+YAHOO_MAP = {
+    "BERGERPAINTS.NS": "BERGEPAINT.NS",
+    "VARDHMAN.NS": "VTL.NS",
+    "FIRSTSOURCE.NS": "FSL.NS",
+    "GUJARATGAS.NS": "GUJGASLTD.NS",
+    "KALYAN.NS": "KALYANKJIL.NS",
+    "TVSMOTORS.NS": "TVSMOTOR.NS",
+    "FINOLEX.NS": "FINCABLES.NS",
+    "GMRINFRA.NS": "GMRAIRPORT.NS",
+    "DALMIACEM.NS": "DALBHARAT.NS",
+    "WELSPUNIND.NS": "WELSPUNLIV.NS",
+    "MCDOWELL-N.NS": "UNITDSPR.NS",
+    "MAHINDRAHOLIDAYS.NS": "MHRIL.NS",
+    "CHAMBALFERT.NS": "CHAMBLFERT.NS",
+    "KPR.NS": "KPRMILL.NS",
+    "IPCA.NS": "IPCALAB.NS"
+}
+
 def fetch_market_data():
-    symbols_space = " ".join(UNIVERSE_SYMBOLS)
     results = {}
     
+    # Create a list of the actual Yahoo symbols to download
+    yahoo_symbols_to_download = []
+    for sym in UNIVERSE_SYMBOLS:
+        yahoo_symbols_to_download.append(YAHOO_MAP.get(sym, sym))
+        
+    symbols_space = " ".join(yahoo_symbols_to_download)
+    
     try:
-        # Download 3 months of data
         print(f"Downloading data for {len(UNIVERSE_SYMBOLS)} symbols...")
+        # We download using the YAHOO symbols
         df = yf.download(symbols_space, period="3mo", progress=False)
         closes = df['Close']
         
-        for sym in UNIVERSE_SYMBOLS:
+        for react_symbol in UNIVERSE_SYMBOLS:
             try:
-                col = closes if len(UNIVERSE_SYMBOLS) == 1 else closes[sym]
+                # We look up the data using the YAHOO symbol
+                yahoo_symbol = YAHOO_MAP.get(react_symbol, react_symbol)
+                
+                col = closes if len(UNIVERSE_SYMBOLS) == 1 else closes[yahoo_symbol]
                 col = col.dropna()
                 
                 if len(col) < 5:
@@ -133,15 +160,14 @@ def fetch_market_data():
                 ret1w = ((current_price - price_1w) / price_1w) * 100
                 ret3m = ((current_price - price_3m) / price_3m) * 100
                 
-                results[sym] = {
+                # But we SAVE the data under the original REACT symbol!
+                results[react_symbol] = {
                     "ret1w": round(float(ret1w), 2),
                     "ret3m": round(float(ret3m), 2)
                 }
-            except Exception as e:
-                print(f"Skipping {sym}: {e}")
+            except Exception:
                 pass 
                 
-        # Save to a physical file
         with open("market_data.json", "w") as outfile:
             json.dump(results, outfile)
         print("Successfully generated market_data.json")
