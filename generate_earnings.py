@@ -6,6 +6,43 @@ import numpy as np
 import time
 
 # Map Yahoo Finance symbols for Indian Stocks (Handling special characters/mismatches)
+
+def get_dynamic_quarters():
+    now = datetime.datetime.now()
+    month = now.month
+    year = now.year
+    
+    # In India, Financial Year (FY) starts in April. 
+    # Let's map calendar months to fiscal quarters and periods.
+    if 4 <= month <= 6:
+        curr_q = f"Q1 FY{str(year+1)[2:]}"
+        prev_q = f"Q4 FY{str(year)[2:]}"
+        curr_per = "Apr–Jun"
+        prev_per = "Jan–Mar"
+    elif 7 <= month <= 9:
+        curr_q = f"Q2 FY{str(year+1)[2:]}"
+        prev_q = f"Q1 FY{str(year+1)[2:]}"
+        curr_per = "Jul–Sep"
+        prev_per = "Apr–Jun"
+    elif 10 <= month <= 12:
+        curr_q = f"Q3 FY{str(year+1)[2:]}"
+        prev_q = f"Q2 FY{str(year+1)[2:]}"
+        curr_per = "Oct–Dec"
+        prev_per = "Jul–Sep"
+    else: # Jan to Mar
+        curr_q = f"Q4 FY{str(year)[2:]}"
+        prev_q = f"Q3 FY{str(year)[2:]}"
+        curr_per = "Jan–Mar"
+        prev_per = "Oct–Dec"
+        
+    return {
+        "prev": prev_q,
+        "curr": curr_q,
+        "prevPeriod": prev_per,
+        "currPeriod": curr_per
+    }
+
+
 def get_yf_sym(sym):
     fixes = {
         "VARDHMAN.NS": "VTL.NS", "FIRSTSOURCE.NS": "FSL.NS", "GUJARATGAS.NS": "GUJGASLTD.NS", 
@@ -456,10 +493,10 @@ def generate_earnings():
         
         global_tot += sec_tot_stocks; global_rpt += sec_tot_stocks
         global_beat += sec_beat; global_miss += sec_miss; global_neu += sec_neu
-
+    quarter_info = get_dynamic_quarters()
     final_json = {
         "lastUpdated": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "quarter": { "prev": "Q3 FY26", "curr": "Q4 FY26", "prevPeriod": "Oct-Dec", "currPeriod": "Jan-Mar" },
+        "quarter": quarter_info,
         "totals": {
             "universe": global_tot, "reported": global_rpt, "pending": 0,
             "beat": global_beat, "miss": global_miss, "neutral": global_neu
