@@ -8,11 +8,11 @@ import requests
 import io
 
 # ─── 1. FETCH LIVE NIFTY 500 FROM NSE ───────────────────────────────────────────
+# ─── 1. FETCH LIVE NIFTY 500 FROM NSE ───────────────────────────────────────────
 def get_live_nifty_500():
     print("Fetching live Nifty 500 constituents from NSE...")
     url = "https://niftyindices.com/Indexconstituent/ind_nifty500list.csv"
     
-    # NSE blocks standard python-requests, so we mimic a real browser
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -26,8 +26,10 @@ def get_live_nifty_500():
             print(f"Failed to fetch NSE data. Status: {response.status_code}")
             return pd.DataFrame()
             
-        # Read the CSV directly from memory
         df = pd.read_csv(io.StringIO(response.text))
+        
+        # 🔴 ADD THIS LINE to filter out dummy demerger tickers
+        df = df[~df['Symbol'].str.contains("DUMMY", case=False, na=False)]
         
         # Append ".NS" to the NSE symbols so yfinance can read them
         df['YF_Symbol'] = df['Symbol'].astype(str) + ".NS"
