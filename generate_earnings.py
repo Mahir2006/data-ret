@@ -246,7 +246,7 @@ def generate_earnings():
         "lastUpdated": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "quarter": quarter_info,
         "totals": {
-            "universe": 500, # Hardcoded to 500 to represent NIFTY 500
+            "universe": global_tot,
             "reported": global_rpt, 
             "pending": max(0, 500 - global_rpt),
             "beat": global_beat, "miss": global_miss, "neutral": global_neu
