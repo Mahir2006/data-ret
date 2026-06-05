@@ -28,18 +28,31 @@ def get_live_nifty_500():
     try:
         response = requests.get(url, headers=headers, timeout=15)
         if response.status_code != 200:
-            return []
+            return [], {}
             
         df = pd.read_csv(io.StringIO(response.text))
         df = df[~df['Symbol'].str.contains("DUMMY", case=False, na=False)]
-        return (df['Symbol'].astype(str) + ".NS").tolist()
         
-    except Exception:
-        return []
+        symbols = (df['Symbol'].astype(str) + ".NS").tolist()
+        
+        # Build metadata map directly from the CSV
+        metadata = {}
+        for _, row in df.iterrows():
+            sym = str(row['Symbol']) + ".NS"
+            metadata[sym] = {
+                "name": str(row.get('Company Name', sym)),
+                "sector": str(row.get('Industry', 'Uncategorized')).strip()
+            }
+            
+        return symbols, metadata
+        
+    except Exception as e:
+        print(f"Error fetching live index data: {e}")
+        return [], {}
 
 # ─── 2. DATA EXTRACTION & EXACT JSON FORMATTING ─────────────────────────────────
 def fetch_market_data():
-    universe_symbols = get_live_nifty_500()
+    universe_symbols, metadata = get_live_nifty_500()
     
     if not universe_symbols:
         print("Fatal Error: Could not fetch Nifty 500 list from NSE. Exiting.")
@@ -48,6 +61,7 @@ def fetch_market_data():
     # EXPLICITLY INJECT NIFTY 50 BENCHMARK FOR THE REACT DASHBOARD
     if "^NSEI" not in universe_symbols:
         universe_symbols.insert(0, "^NSEI")
+        metadata["^NSEI"] = {"name": "NIFTY 50", "sector": "Benchmark"}
 
     results = {}
     yahoo_symbols_to_download = [YAHOO_MAP.get(sym, sym) for sym in universe_symbols]
@@ -102,7 +116,6 @@ def fetch_market_data():
                 if len(col) < 5:
                     continue 
                     
-                # DATE-BASED LOGIC RESTORED
                 current_date = col.index[-1]
                 current_price = col.iloc[-1]
                 
@@ -118,8 +131,13 @@ def fetch_market_data():
                 ret1w = ((current_price - price_1w) / price_1w) * 100
                 ret3m = ((current_price - price_3m) / price_3m) * 100
                 
-                # Save exact JSON structure
+                # Fetch metadata to inject into JSON
+                stock_meta = metadata.get(react_symbol, {"name": react_symbol, "sector": "Uncategorized"})
+                
+                # Save dynamically enriched JSON structure
                 results[react_symbol] = {
+                    "name": stock_meta["name"],
+                    "sector": stock_meta["sector"],
                     "ret1w": round(float(ret1w), 2),
                     "ret3m": round(float(ret3m), 2)
                 }
@@ -127,11 +145,10 @@ def fetch_market_data():
             except Exception:
                 pass
                 
-        # Save exact JSON structure (no indents, matching your reference)
         with open("market_data.json", "w") as outfile:
             json.dump(results, outfile)
             
-        print("Successfully generated market_data.json")
+        print(f"Successfully generated market_data.json with {len(results)} records.")
             
     except Exception as e:
         print(f"Global Error: {str(e)}")
