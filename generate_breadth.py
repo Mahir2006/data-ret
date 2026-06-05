@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import pandas as pd
 import yfinance as yf
 
@@ -110,27 +111,54 @@ YAHOO_MAP = {
 def generate_breadth_data():
     print("Starting TRUE market breadth calculation (500-stock universe)...")
     
-    # Map symbols for downloading
     yahoo_symbols_to_download = [YAHOO_MAP.get(sym, sym) for sym in UNIVERSE_SYMBOLS]
-    
-    # Remove duplicates, add benchmark
     all_tickers = list(set(yahoo_symbols_to_download)) + ["^NSEI"]
 
-    print(f"Downloading data for {len(all_tickers)} tickers...")
-    
     try:
-        # Multi-threading automatically enabled by yfinance for large lists
-        data = yf.download(all_tickers, period="6m", interval="1d", progress=False)
+        print(f"Downloading data for {len(all_tickers)} individual tickers (Chunked to prevent rate-limiting)...\n")
+        
+        chunk_size = 50
+        closes_list = []
+        
+        # Download in 50-stock chunks to bypass Yahoo anti-bot filters
+        for i in range(0, len(all_tickers), chunk_size):
+            chunk = all_tickers[i:i + chunk_size]
+            print(f"Fetching batch {(i//chunk_size) + 1}/{(len(all_tickers)//chunk_size) + 1}...")
+            
+            df = yf.download(chunk, period="6m", interval="1d", progress=False, threads=False)
+            
+            if df.empty:
+                print(f"  -> Warning: Batch {(i//chunk_size) + 1} returned completely empty data.")
+                continue
+                
+            # Robust Multi-Index Handling
+            if isinstance(df.columns, pd.MultiIndex):
+                if 'Adj Close' in df.columns.get_level_values(0) or 'Close' in df.columns.get_level_values(0):
+                    c = df['Adj Close'] if 'Adj Close' in df.columns.get_level_values(0) else df['Close']
+                else:
+                    c = df.xs('Adj Close', level=1, axis=1) if 'Adj Close' in df.columns.get_level_values(1) else df.xs('Close', level=1, axis=1)
+            else:
+                c = df[['Adj Close']] if 'Adj Close' in df.columns else df[['Close']]
+                if len(chunk) == 1:
+                    c.columns = [chunk[0]]
+            
+            closes_list.append(c)
+            time.sleep(1.5)  # Breathe to prevent Yahoo IP Ban
+            
+        if not closes_list:
+            print("\nFatal Error: All downloads were blocked by Yahoo API.")
+            return
+            
+        closes = pd.concat(closes_list, axis=1)
+        closes = closes.ffill().dropna(how='all')
+        
+        # Drop duplicated columns if any chunks overlapped
+        closes = closes.loc[:, ~closes.columns.duplicated()]
+
     except Exception as e:
         print(f"Error downloading data from yfinance: {e}")
         return
 
-    # Handle yfinance multi-index response
-    closes = data['Adj Close'] if 'Adj Close' in data else data['Close']
-    
-    # Clean global data (forward fill to bridge single-day suspensions, drop market holidays)
-    closes = closes.ffill().dropna(how='all')
-    
     advancers = 0
     decliners = 0
     above_sma50 = 0
@@ -140,26 +168,23 @@ def generate_breadth_data():
     for react_symbol in UNIVERSE_SYMBOLS:
         yahoo_symbol = YAHOO_MAP.get(react_symbol, react_symbol)
         
-        # Safely skip if ticker was delisted or un-fetchable
         if yahoo_symbol not in closes.columns:
             continue
             
         series = closes[yahoo_symbol].dropna()
         
-        if len(series) < 5:  # Need at least a few days of data
+        if len(series) < 5: 
             continue
             
         total_tracked += 1
         current_price = series.iloc[-1]
         previous_price = series.iloc[-2]
         
-        # Advance / Decline Status
         if current_price > previous_price:
             advancers += 1
         elif current_price < previous_price:
             decliners += 1
             
-        # Moving Average Status
         if len(series) >= 50:
             sma50 = series.rolling(window=50).mean().iloc[-1]
             if current_price > sma50:
@@ -174,9 +199,8 @@ def generate_breadth_data():
         print("Error: No valid ticker data processed.")
         return
 
-    print(f"Successfully processed {total_tracked} active stocks for breadth.")
+    print(f"\nSuccessfully processed {total_tracked} active stocks for breadth.")
 
-    # 1:1 Math (No Multipliers)
     pct_above_sma50 = round((above_sma50 / total_tracked) * 100, 2)
     pct_above_sma200 = round((above_sma200 / total_tracked) * 100, 2)
 
@@ -216,7 +240,6 @@ def generate_breadth_data():
         overall["deathCross"] = False
         print("Warning: Benchmark Nifty 50 (^NSEI) data was missing.")
 
-    # Export to JSON
     output_filename = "breadth_data.json"
     try:
         with open(output_filename, "w") as f:
