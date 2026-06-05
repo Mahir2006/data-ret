@@ -16,16 +16,15 @@ YAHOO_MAP = {
     "IPCA.NS": "IPCALAB.NS", "M&M.NS": "M&M.NS", "BAJAJ-AUTO.NS": "BAJAJ-AUTO.NS"
 }
 
+# ─── 1. FETCH LIVE NIFTY 500 FROM NSE ───────────────────────────────────────────
 def get_live_nifty_500():
     print("Fetching live Nifty 500 constituents and metadata from NSE...")
     
-    # We use two endpoints. If the primary blocks us with HTML, we fall back to the archive.
     urls = [
         "https://niftyindices.com/Indexconstituent/ind_nifty500list.csv",
         "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
     ]
     
-    # Modern browser headers
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept': 'text/csv,text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -49,18 +48,15 @@ def get_live_nifty_500():
     
     for url in urls:
         try:
-            # Extract base domain to fetch fresh cookies before requesting the file
             base_domain = url.split('/')[2]
             print(f"Establishing secure session with {base_domain}...")
             
-            # Ping base domain to get Cloudflare/Akamai session cookies
             session.get(f"https://{base_domain}", timeout=15)
             time.sleep(1.5) 
             
             print(f"Downloading CSV payload from {url}...")
             response = session.get(url, timeout=20)
             
-            # CRITICAL FIX: Ensure the response isn't an HTML bot-challenge page
             if response.status_code == 200 and "<html" not in response.text.lower()[:500]:
                 csv_payload = response.text
                 print("✅ Successfully downloaded clean CSV data.")
@@ -76,16 +72,26 @@ def get_live_nifty_500():
         return [], {}
 
     try:
-        # Load the validated payload into Pandas
         df = pd.read_csv(io.StringIO(csv_payload))
         
-        # Clean hidden trailing whitespaces from CSV column headers
+        # CRITICAL FIX 1: Strip hidden trailing whitespaces from NSE column headers
         df.columns = df.columns.str.strip()
         
         df = df[~df['Symbol'].str.contains("DUMMY", case=False, na=False)]
         
-        # --- NOTE: Keep your existing file-specific metadata parsing logic below this line ---
-        # (generate_data.py uses dictionary metadata formatting, while generate_breadth.py uses string formatting)
+        symbols = (df['Symbol'].astype(str).str.strip() + ".NS").tolist()
+        
+        # Build dynamic metadata mapping
+        metadata = {}
+        for _, row in df.iterrows():
+            sym = str(row['Symbol']).strip() + ".NS"
+            metadata[sym] = str(row.get('Industry', 'Uncategorized')).strip()
+            
+        return symbols, metadata
+        
+    except Exception as e:
+        print(f"Error parsing NSE list: {e}")
+        return [], {}
 
 # ─── 2. BREADTH DATA CALCULATION & FORMATTING ─────────────────────────────────
 def generate_breadth_data():
