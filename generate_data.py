@@ -1,6 +1,7 @@
 import yfinance as yf
 import pandas as pd
 import json
+import time
 
 # True Nifty 500 Universe (500 Most Liquid NSE Stocks)
 UNIVERSE_SYMBOLS = [
@@ -116,39 +117,74 @@ def fetch_market_data():
     all_tickers = list(set(yahoo_symbols_to_download))
 
     try:
-        print(f"Downloading data for {len(all_tickers)} individual tickers...\n")
+        print(f"Downloading data for {len(all_tickers)} individual tickers (Chunked to prevent rate-limiting)...\n")
         
-        # Download data using the YAHOO symbols (4 months to ensure we have exactly 3 full months backward)
-        df = yf.download(all_tickers, period="4mo", interval="1d", progress=False)
+        chunk_size = 50
+        closes_list = []
         
-        # Handle yfinance multi-index response
-        closes = df['Adj Close'] if 'Adj Close' in df else df['Close']
+        for i in range(0, len(all_tickers), chunk_size):
+            chunk = all_tickers[i:i + chunk_size]
+            print(f"Fetching batch {(i//chunk_size) + 1}/{(len(all_tickers)//chunk_size) + 1}...")
+            
+            # Download chunk with threads=False to stay under API limits
+            df = yf.download(chunk, period="4mo", interval="1d", progress=False, threads=False)
+            
+            if df.empty:
+                print(f"  -> Warning: Batch {(i//chunk_size) + 1} returned completely empty data.")
+                continue
+                
+            # --- ROBUST MULTI-INDEX HANDLING ---
+            # yfinance alters its column structure frequently. This guarantees we isolate the correct price level.
+            if isinstance(df.columns, pd.MultiIndex):
+                if 'Adj Close' in df.columns.get_level_values(0) or 'Close' in df.columns.get_level_values(0):
+                    c = df['Adj Close'] if 'Adj Close' in df.columns.get_level_values(0) else df['Close']
+                else:
+                    c = df.xs('Adj Close', level=1, axis=1) if 'Adj Close' in df.columns.get_level_values(1) else df.xs('Close', level=1, axis=1)
+            else:
+                c = df[['Adj Close']] if 'Adj Close' in df.columns else df[['Close']]
+                if len(chunk) == 1:
+                    c.columns = [chunk[0]]
+            
+            closes_list.append(c)
+            time.sleep(1.5)  # Breathe to prevent Yahoo IP Ban
+            
+        if not closes_list:
+            print("\nFatal Error: All downloads were blocked by Yahoo API.")
+            return
+            
+        # Combine all successful chunks into one global dataframe
+        closes = pd.concat(closes_list, axis=1)
         
         # --- DATA ALIGNMENT & CLEANUP ---
         closes = closes.ffill()
         closes = closes.dropna(how='all')
         
-        # Drop columns (symbols) that returned absolutely no data
         if isinstance(closes, pd.DataFrame):
+            # Drop duplicated columns if any chunks overlapped
+            closes = closes.loc[:, ~closes.columns.duplicated()]
             closes = closes.dropna(axis=1, how='all')
             valid_downloaded_symbols = set(closes.columns)
         else:
             valid_downloaded_symbols = {closes.name}
             closes = closes.to_frame()
 
-        print(f"{'Symbol':<18} | {'1-Week Return':<15} | {'3-Month Return':<15}")
+        print(f"\n{'Symbol':<18} | {'1-Week Return':<15} | {'3-Month Return':<15}")
         print("-" * 55)
         
         for react_symbol in UNIVERSE_SYMBOLS:
             try:
                 yahoo_symbol = YAHOO_MAP.get(react_symbol, react_symbol)
                 
+                # If a symbol is completely un-fetchable or actively delisted
                 if yahoo_symbol not in valid_downloaded_symbols:
+                    print(f"{react_symbol:<18} | {'DROPPED (API Block / Delisted)':<28}")
                     continue
                 
                 col = closes[yahoo_symbol].dropna()
                 
+                # If a symbol just IPO'd within the last week
                 if len(col) < 5:
+                    print(f"{react_symbol:<18} | {'DROPPED (< 5 days of data)':<28}")
                     continue 
                     
                 current_date = col.index[-1]
@@ -161,7 +197,9 @@ def fetch_market_data():
                 price_1w = col.asof(target_1w)
                 price_3m = col.asof(target_3m)
                 
+                # If a symbol IPO'd within the last 3 months
                 if pd.isna(price_1w) or pd.isna(price_3m):
+                    print(f"{react_symbol:<18} | {'DROPPED (Not enough history)':<28}")
                     continue 
                 
                 ret1w = ((current_price - price_1w) / price_1w) * 100
@@ -174,8 +212,8 @@ def fetch_market_data():
                 
                 print(f"{react_symbol:<18} | {results[react_symbol]['ret1w']:>13} % | {results[react_symbol]['ret3m']:>13} %")
                 
-            except Exception:
-                pass 
+            except Exception as e:
+                print(f"{react_symbol:<18} | ERROR: {str(e)}")
                 
         with open("market_data.json", "w") as outfile:
             json.dump(results, outfile, indent=4)
