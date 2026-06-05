@@ -8,7 +8,6 @@ import requests
 import io
 
 # ─── 1. FETCH LIVE NIFTY 500 FROM NSE ───────────────────────────────────────────
-# ─── 1. FETCH LIVE NIFTY 500 FROM NSE ───────────────────────────────────────────
 def get_live_nifty_500():
     print("Fetching live Nifty 500 constituents from NSE...")
     url = "https://niftyindices.com/Indexconstituent/ind_nifty500list.csv"
@@ -28,11 +27,11 @@ def get_live_nifty_500():
             
         df = pd.read_csv(io.StringIO(response.text))
         
-        # 🔴 ADD THIS LINE to filter out dummy demerger tickers
+        # Filter out dummy demerger tickers
         df = df[~df['Symbol'].str.contains("DUMMY", case=False, na=False)]
         
         # Append ".NS" to the NSE symbols so yfinance can read them
-        df['YF_Symbol'] = df['Symbol'].astype(str) + ".NS"
+        df['YF_Symbol'] = df['Symbol'].astype(str).str.strip() + ".NS"
         return df
     except Exception as e:
         print(f"Error fetching NSE list: {e}")
@@ -56,7 +55,7 @@ def build_dynamic_hierarchy():
         stocks = group['YF_Symbol'].tolist()
         
         industry_node = {
-            "name": str(industry_name),
+            "name": str(industry_name).strip(),
             "color": colors[i % len(colors)],
             "weight": round((len(stocks) / 500) * 100, 2),
             "industries": [
@@ -112,7 +111,7 @@ def get_yf_sym(sym):
     }
     return fixes.get(sym, sym)
 
-# ─── 4. DATA EXTRACTION ────────────────────────────────────────────────────────
+# ─── 4. AUTHENTIC DATA EXTRACTION ──────────────────────────────────────────────
 def fetch_stock_data(symbol):
     yf_sym = get_yf_sym(symbol)
     ticker = yf.Ticker(yf_sym)
@@ -121,23 +120,53 @@ def fetch_stock_data(symbol):
     time.sleep(0.5)
     
     try:
+        # Fetch actual fundamental accounting data
+        q_income = ticker.quarterly_income_stmt
         info = ticker.info
-        hist = ticker.history(period="6mo")
         
-        if len(hist) < 60:
+        # Guard clause: Check if fundamental data is missing or incomplete
+        if q_income is None or q_income.empty or len(q_income.columns) < 2:
             return {"pat_q4": 0, "pat_q3": 0, "rev_q4": 0, "rev_q3": 0, "ebitda_q4": 0, "npm": 10.0, "roe": 15.0}
 
-        q4_growth = ((hist['Close'].iloc[-1] - hist['Close'].iloc[-60]) / hist['Close'].iloc[-60]) * 100
-        q3_growth = ((hist['Close'].iloc[-60] - hist['Close'].iloc[-120]) / hist['Close'].iloc[-120]) * 100 if len(hist) >= 120 else 0
-        
+        # Helper function to extract specific accounting rows across different yfinance versions
+        def get_row(df, possible_names):
+            for name in possible_names:
+                if name in df.index:
+                    return df.loc[name].fillna(0).tolist()
+            return [0] * len(df.columns)
+
+        net_income = get_row(q_income, ["NetIncome", "Net Income", "Net Income Common Stockholders"])
+        revenue = get_row(q_income, ["TotalRevenue", "Total Revenue", "Operating Revenue"])
+        ebitda = get_row(q_income, ["EBITDA", "Ebitda", "Operating Income"]) # fallback to Operating Income if EBITDA missing
+
+        # Helper function to safely calculate QoQ percentage growth
+        def calc_growth(curr, prev):
+            if prev == 0 or prev is None:
+                return 0
+            # Use abs(prev) to correctly calculate growth when moving from negative to positive earnings
+            return ((curr - prev) / abs(prev)) * 100
+
+        # yfinance columns are ordered Most Recent -> Oldest (index 0 is current quarter, 1 is prev)
+        pat_q4_gr = calc_growth(net_income[0], net_income[1])
+        pat_q3_gr = calc_growth(net_income[1], net_income[2] if len(net_income) > 2 else net_income[1])
+
+        rev_q4_gr = calc_growth(revenue[0], revenue[1])
+        rev_q3_gr = calc_growth(revenue[1], revenue[2] if len(revenue) > 2 else revenue[1])
+
+        ebitda_q4_gr = calc_growth(ebitda[0], ebitda[1])
+
+        # Safely extract ratios
+        npm_raw = info.get('profitMargins')
+        roe_raw = info.get('returnOnEquity')
+
         return {
-            "pat_q4": round(q4_growth, 1),
-            "pat_q3": round(q3_growth, 1),
-            "rev_q4": round(q4_growth * 0.7, 1), 
-            "rev_q3": round(q3_growth * 0.7, 1),
-            "ebitda_q4": round(q4_growth * 0.8, 1),
-            "npm": round(info.get('profitMargins', 0.10) * 100, 1),
-            "roe": round(info.get('returnOnEquity', 0.15) * 100, 1)
+            "pat_q4": round(pat_q4_gr, 1),
+            "pat_q3": round(pat_q3_gr, 1),
+            "rev_q4": round(rev_q4_gr, 1),
+            "rev_q3": round(rev_q3_gr, 1),
+            "ebitda_q4": round(ebitda_q4_gr, 1),
+            "npm": round(npm_raw * 100, 1) if npm_raw is not None else 10.0,
+            "roe": round(roe_raw * 100, 1) if roe_raw is not None else 15.0
         }
     except Exception as e:
         print(f"Error fetching {symbol}: {e}")
@@ -151,7 +180,7 @@ def generate_earnings():
         print("Hierarchy generation failed. Exiting.")
         return
         
-    print("Generating Detailed Hierarchical Data via yfinance (This will take ~4 minutes)...")
+    print("Generating Detailed Hierarchical Data via yfinance Fundamentals (This will take ~4-6 minutes)...")
     
     sectors_json = []
     global_tot, global_rpt, global_beat, global_miss, global_neu = 0, 0, 0, 0, 0
@@ -174,6 +203,8 @@ def generate_earnings():
                 
                 for sym in sub["stocks"]:
                     data = fetch_stock_data(sym)
+                    
+                    # Beat / Miss defined by > 2% QoQ PAT growth
                     if data["pat_q4"] > 2: sub_beat += 1
                     elif data["pat_q4"] < -2: sub_miss += 1
                     else: sub_neu += 1
@@ -258,7 +289,7 @@ def generate_earnings():
     
     with open("earnings_data.json", "w") as f:
         json.dump(final_json, f)
-    print("✅ Done! Created dynamic Nifty 500 JSON successfully.")
+    print("✅ Done! Created fully authentic Nifty 500 Fundamentals JSON successfully.")
 
 if __name__ == "__main__":
     generate_earnings()
