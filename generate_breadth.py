@@ -6,6 +6,7 @@ import requests
 import io
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
 # Edge-case mappings for Yahoo Finance ticker mismatches
 YAHOO_MAP = {
     "VARDHMAN.NS": "VTL.NS", "FIRSTSOURCE.NS": "FSL.NS", "GUJARATGAS.NS": "GUJGASLTD.NS", 
@@ -34,8 +35,8 @@ def get_live_nifty_500():
     # Set up a session with automatic retries and exponential backoff
     session = requests.Session()
     retry_strategy = Retry(
-        total=5,              # Maximum number of retries
-        backoff_factor=1.5,   # Wait times: 1.5s, 3s, 6s, etc...
+        total=5,              
+        backoff_factor=1.5,   
         status_forcelist=[403, 429, 500, 502, 503, 504],
         allowed_methods=["GET"]
     )
@@ -45,12 +46,10 @@ def get_live_nifty_500():
     session.headers.update(headers)
     
     try:
-        # Step 1: Ping the base URL first to establish a session and get cookies
         print("Establishing secure session with NSE servers...")
         session.get(base_url, timeout=20)
-        time.sleep(1.5) # Brief pause to mimic human navigation
+        time.sleep(1.5) 
         
-        # Step 2: Request the actual CSV payload with a longer timeout
         print("Downloading Nifty 500 CSV payload...")
         response = session.get(url, timeout=30)
         
@@ -59,14 +58,18 @@ def get_live_nifty_500():
             return [], {}
             
         df = pd.read_csv(io.StringIO(response.text))
+        
+        # CRITICAL FIX 1: Strip hidden trailing whitespaces from NSE column headers
+        df.columns = df.columns.str.strip()
+        
         df = df[~df['Symbol'].str.contains("DUMMY", case=False, na=False)]
         
-        symbols = (df['Symbol'].astype(str) + ".NS").tolist()
+        symbols = (df['Symbol'].astype(str).str.strip() + ".NS").tolist()
         
         # Build dynamic metadata mapping
         metadata = {}
         for _, row in df.iterrows():
-            sym = str(row['Symbol']) + ".NS"
+            sym = str(row['Symbol']).strip() + ".NS"
             metadata[sym] = str(row.get('Industry', 'Uncategorized')).strip()
             
         return symbols, metadata
@@ -77,6 +80,7 @@ def get_live_nifty_500():
     except Exception as e:
         print(f"Error fetching NSE list: {e}")
         return [], {}
+
 # ─── 2. BREADTH DATA CALCULATION & FORMATTING ─────────────────────────────────
 def generate_breadth_data():
     universe_symbols, metadata = get_live_nifty_500()
@@ -85,7 +89,6 @@ def generate_breadth_data():
         print("Fatal Error: Could not fetch Nifty 500 list from NSE. Exiting.")
         return
 
-    # EXPLICITLY INJECT NIFTY 50 BENCHMARK FOR THE DASHBOARD
     if "^NSEI" not in universe_symbols:
         universe_symbols.insert(0, "^NSEI")
         metadata["^NSEI"] = "Benchmark"
@@ -94,6 +97,12 @@ def generate_breadth_data():
     
     yahoo_symbols_to_download = [YAHOO_MAP.get(sym, sym) for sym in universe_symbols]
     all_tickers = list(set(yahoo_symbols_to_download))
+
+    # Diagnostic Tracking Lists
+    missing_from_yahoo = []
+    not_enough_days = []
+    missing_date_prices = []
+    generic_errors = []
 
     try:
         print(f"Downloading 1-year data for {len(all_tickers)} individual tickers...\n")
@@ -109,14 +118,20 @@ def generate_breadth_data():
             if df.empty:
                 continue
                 
+            # CRITICAL FIX 2: Multi-Index yfinance parsing
             if isinstance(df.columns, pd.MultiIndex):
                 if 'Close' in df.columns.get_level_values(0):
                     c = df['Close']
-                else:
+                elif 'Close' in df.columns.get_level_values(1):
                     c = df.xs('Close', level=1, axis=1)
+                else:
+                    continue
                 
-                for sym in c.columns:
-                    closes_dict[sym] = c[sym]
+                if isinstance(c, pd.DataFrame):
+                    for sym in c.columns:
+                        closes_dict[sym] = c[sym]
+                elif isinstance(c, pd.Series):
+                    closes_dict[c.name] = c
             else:
                 if 'Close' in df.columns and len(chunk) == 1:
                     closes_dict[chunk[0]] = df['Close']
@@ -128,7 +143,12 @@ def generate_breadth_data():
             return
             
         closes = pd.DataFrame(closes_dict)
+        
+        # CRITICAL FIX 3: Strip timezones before calculating exact date offsets
+        if closes.index.tz is not None:
+            closes.index = closes.index.tz_localize(None)
         closes.index = pd.to_datetime(closes.index).normalize()
+        
         closes = closes.ffill().dropna(how='all')
 
         valid_cols = [c for c in closes.columns if c != '^NSEI']
@@ -142,7 +162,6 @@ def generate_breadth_data():
         high52 = stocks_df.rolling(window=252, min_periods=50).max()
         low52 = stocks_df.rolling(window=252, min_periods=50).min()
         
-        # --- DATE BASED LOGIC IMPLEMENTATION ---
         curr_date = stocks_df.index[-1]
         target_1w = curr_date - pd.Timedelta(days=7)
         target_1m = curr_date - pd.DateOffset(months=1)
@@ -152,6 +171,17 @@ def generate_breadth_data():
         
         total_tracked = len(valid_cols)
         mul = 500 / total_tracked if total_tracked > 0 else 1
+        
+        # Pre-flight error checks for diagnostics
+        for react_symbol in universe_symbols:
+            if react_symbol == "^NSEI": continue
+            yahoo_symbol = YAHOO_MAP.get(react_symbol, react_symbol)
+            if yahoo_symbol not in valid_cols:
+                missing_from_yahoo.append(react_symbol)
+            else:
+                col = closes[yahoo_symbol].dropna()
+                if len(col) < 50: # Using 50 because we calculate 50EMA
+                    not_enough_days.append(react_symbol)
         
         overall = {
             "aboveEma50": int((curr_px > ema50.iloc[-1]).sum() * mul),
@@ -166,7 +196,7 @@ def generate_breadth_data():
             "aboveSma200": int((curr_px > sma200.iloc[-1]).sum() * mul)
         }
         
-        # Benchmark Calculations (Date-based)
+        # Benchmark Calculations 
         nifty = closes.get('^NSEI')
         if nifty is not None and not nifty.isna().all():
             nifty = nifty.dropna()
@@ -203,7 +233,6 @@ def generate_breadth_data():
             sec_df = stocks_df[valid_sec_syms]
             target_count = len(valid_sec_syms)
             
-            # Use iloc[-1] arrays safely to count how many are > ema50
             above_count = (sec_df.iloc[-1] > ema50[valid_sec_syms].iloc[-1]).sum()
             
             sec_curr_sum = sec_df.iloc[-1].sum()
@@ -243,7 +272,24 @@ def generate_breadth_data():
         with open("breadth_data.json", "w") as outfile:
             json.dump({ "overall": overall, "sectors": sectors_json, "history": history_json, "signals": signals_json }, outfile)
             
-        print("\nSuccessfully generated dynamic breadth_data.json.")
+        # ─── PRINT DIAGNOSTIC REPORT ───
+        print("\n" + "="*50)
+        print("📊 BREADTH EXTRACTION REPORT")
+        print("="*50)
+        print(f"✅ Successfully Processed: {total_tracked} stocks")
+        
+        if missing_from_yahoo:
+            print(f"\n❌ Missing from Yahoo entirely ({len(missing_from_yahoo)}):")
+            print(f"   {', '.join(missing_from_yahoo[:10])}" + ("..." if len(missing_from_yahoo) > 10 else ""))
+            
+        if not_enough_days:
+            print(f"\n⚠️ Recent IPO / Less than 50 days of history ({len(not_enough_days)}):")
+            print(f"   {', '.join(not_enough_days)}")
+            
+        if missing_date_prices:
+            print(f"\n📅 Missing historical milestone dates ({len(missing_date_prices)}):")
+            print(f"   {', '.join(missing_date_prices[:10])}" + ("..." if len(missing_date_prices) > 10 else ""))
+        print("="*50 + "\n")
             
     except Exception as e:
         print(f"Global Error: {str(e)}")
