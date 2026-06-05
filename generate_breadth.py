@@ -73,14 +73,25 @@ def fetch_breadth_data():
     symbols_space = " ".join(yahoo_symbols_to_download)
     
     try:
-        print(f"Downloading 1-year data for Breadth dashboard...")
+        print(f"Downloading 1-year data for Breadth dashboard ({len(UNIVERSE_SYMBOLS)} symbols)...")
         df = yf.download(symbols_space, period="1y", progress=False)
-        closes = df['Close'].ffill() 
+        
+        # --- ROBUST DATA ALIGNMENT ---
+        closes = df['Close'].ffill()                  # Forward fill to align dates
+        closes = closes.dropna(how='all')             # Drop market holidays
+        closes = closes.dropna(axis=1, how='all')     # Drop completely invalid symbols
         
         valid_cols = [c for c in closes.columns if c != '^NSEI']
-        stocks_df = closes[valid_cols].dropna(how='all')
+        stocks_df = closes[valid_cols]
+        total_tracked = len(valid_cols)
         
-        # Calculate moving averages over entire year
+        if total_tracked == 0:
+            print("Error: No valid stock data downloaded.")
+            return
+
+        print(f"Processing Breadth for {total_tracked} active stocks...\n")
+        
+        # Calculate moving averages over the dataset
         ema20 = stocks_df.ewm(span=20, adjust=False).mean()
         ema50 = stocks_df.ewm(span=50, adjust=False).mean()
         ema200 = stocks_df.ewm(span=200, adjust=False).mean()
@@ -88,11 +99,12 @@ def fetch_breadth_data():
         high52 = stocks_df.rolling(window=252, min_periods=50).max()
         low52 = stocks_df.rolling(window=252, min_periods=50).min()
         
+        # Get specific timeframes safely
         curr_px = stocks_df.iloc[-1]
         px_1w = stocks_df.iloc[-5] if len(stocks_df) >= 5 else stocks_df.iloc[0]
         
-        total_tracked = len(valid_cols)
-        mul = 500 / total_tracked if total_tracked > 0 else 1
+        # Scale to match the UI expectation (out of 500)
+        mul = 500 / total_tracked
         
         overall = {
             "aboveEma50": int((curr_px > ema50.iloc[-1]).sum() * mul),
@@ -107,27 +119,48 @@ def fetch_breadth_data():
             "aboveSma200": int((curr_px > sma200.iloc[-1]).sum() * mul)
         }
         
+        # Nifty 50 Calculations safely
         nifty = closes.get('^NSEI')
-        if nifty is not None:
+        if nifty is not None and not nifty.isna().all():
             nifty = nifty.dropna()
-            n_curr, n_1w, n_1m = nifty.iloc[-1], nifty.iloc[-5], nifty.iloc[-21]
+            n_curr = nifty.iloc[-1]
+            n_1w = nifty.iloc[-5] if len(nifty) >= 5 else nifty.iloc[0]
+            n_1m = nifty.iloc[-21] if len(nifty) >= 21 else nifty.iloc[0]
+            
             overall["nifty500Change1W"] = round(((n_curr - n_1w) / n_1w) * 100, 2)
             overall["nifty500Change1M"] = round(((n_curr - n_1m) / n_1m) * 100, 2)
-            n_ema50, n_ema200 = nifty.ewm(span=50).mean().iloc[-1], nifty.ewm(span=200).mean().iloc[-1]
+            
+            n_ema50 = nifty.ewm(span=50).mean().iloc[-1]
+            n_ema200 = nifty.ewm(span=200).mean().iloc[-1]
             golden_cross = bool(n_ema50 > n_ema200)
             death_cross = bool(n_ema50 < n_ema200)
         else:
-            overall["nifty500Change1W"] = 0; overall["nifty500Change1M"] = 0
-            golden_cross = False; death_cross = False
+            overall["nifty500Change1W"] = 0
+            overall["nifty500Change1M"] = 0
+            golden_cross = False
+            death_cross = False
+            print("Warning: Benchmark Nifty 50 (^NSEI) data was missing.")
             
+        # Process Sectors
         sectors_json = []
+        print(f"{'Sector':<30} | {'Active/Target':<15} | {'% > EMA50':<12} | {'1W Change':<10}")
+        print("-" * 75)
+        
         for sec_name, sec_data in TARGET_SECTORS.items():
             sec_syms = [YAHOO_MAP.get(s, s) for s in sec_data["symbols"]]
             valid_sec_syms = [s for s in sec_syms if s in valid_cols]
+            
             if valid_sec_syms:
                 sec_df = stocks_df[valid_sec_syms]
                 pct_above = (sec_df.iloc[-1] > ema50[valid_sec_syms].iloc[-1]).sum() / len(valid_sec_syms)
-                sec_ret = ((sec_df.iloc[-1].sum() - sec_df.iloc[-5].sum()) / sec_df.iloc[-5].sum()) * 100
+                
+                # Protect against division by zero if entire sector was NA 1-week ago
+                sec_past_sum = sec_df.iloc[-5].sum() if len(sec_df) >= 5 else sec_df.iloc[0].sum()
+                if sec_past_sum > 0:
+                    sec_ret = ((sec_df.iloc[-1].sum() - sec_past_sum) / sec_past_sum) * 100
+                else:
+                    sec_ret = 0.0
+                
                 sectors_json.append({
                     "name": sec_name,
                     "total": sec_data["target_count"],
@@ -135,6 +168,13 @@ def fetch_breadth_data():
                     "change1W": round(sec_ret, 2)
                 })
                 
+                # Console Logging for Sectors
+                active_str = f"{len(valid_sec_syms)}/{len(sec_syms)}"
+                pct_str = f"{round(pct_above * 100, 1)}%"
+                ret_str = f"{round(sec_ret, 2)}%"
+                print(f"{sec_name:<30} | {active_str:<15} | {pct_str:<12} | {ret_str:<10}")
+                
+        # Historical Data Array
         history_json = []
         for i in range(11, -1, -1):
             idx = -((i * 5) + 1)
@@ -142,22 +182,33 @@ def fetch_breadth_data():
                 h_pct = ((stocks_df.iloc[idx] > ema50.iloc[idx]).sum() / total_tracked) * 100
                 history_json.append({"week": f"W{-i}" if i > 0 else "Curr", "breadth": round(h_pct, 1)})
                 
+        # Top Level Market Signals
         trend = "uptrend" if overall["nifty500Change1M"] > 2 else "downtrend" if overall["nifty500Change1M"] < -2 else "sideways"
         mom = int((overall["aboveEma20"] / 500) * 100)
         
         signals_json = {
-            "goldenCross": golden_cross, "deathCross": death_cross,
-            "divergence": "none", "trend": trend, "momentumScore": mom,
+            "goldenCross": golden_cross, 
+            "deathCross": death_cross,
+            "divergence": "none", 
+            "trend": trend, 
+            "momentumScore": mom,
             "breadthThrust": bool(mom > 70 and overall["nifty500Change1W"] > 2),
             "marketRegime": "risk-on" if trend == "uptrend" else "risk-off" if trend == "downtrend" else "neutral"
         }
         
+        # Write to JSON
         with open("breadth_data.json", "w") as outfile:
-            json.dump({ "overall": overall, "sectors": sectors_json, "history": history_json, "signals": signals_json }, outfile)
-        print("Successfully generated breadth_data.json")
+            json.dump({ 
+                "overall": overall, 
+                "sectors": sectors_json, 
+                "history": history_json, 
+                "signals": signals_json 
+            }, outfile)
+            
+        print("\nSuccessfully generated breadth_data.json!")
             
     except Exception as e:
-        print(f"Breadth Generator Error: {str(e)}")
+        print(f"\nBreadth Generator Error: {str(e)}")
 
 if __name__ == "__main__":
     fetch_breadth_data()
