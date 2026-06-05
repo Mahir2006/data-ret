@@ -1,6 +1,6 @@
 import yfinance as yf
+import pandas as pd
 import json
-import os
 
 # The complete list of NSE symbols matching your React Dashboard
 UNIVERSE_SYMBOLS = [
@@ -128,27 +128,53 @@ def fetch_market_data():
     results = {}
     
     # Create a list of the actual Yahoo symbols to download
-    yahoo_symbols_to_download = []
-    for sym in UNIVERSE_SYMBOLS:
-        yahoo_symbols_to_download.append(YAHOO_MAP.get(sym, sym))
-        
+    yahoo_symbols_to_download = [YAHOO_MAP.get(sym, sym) for sym in UNIVERSE_SYMBOLS]
     symbols_space = " ".join(yahoo_symbols_to_download)
     
     try:
-        print(f"Downloading data for {len(UNIVERSE_SYMBOLS)} symbols...")
-        # We download using the YAHOO symbols
+        print(f"Downloading data for {len(UNIVERSE_SYMBOLS)} symbols...\n")
+        
+        # Download data using the YAHOO symbols
         df = yf.download(symbols_space, period="3mo", progress=False)
         closes = df['Close']
         
+        # --- DATA ALIGNMENT & CLEANUP ---
+        # 1. Forward fill to align market dates and handle single missing days
+        closes = closes.ffill()
+        
+        # 2. Drop rows where the entire market was closed (weekends/holidays)
+        closes = closes.dropna(how='all')
+        
+        # 3. Drop columns (symbols) that returned absolutely no data
+        if isinstance(closes, pd.DataFrame):
+            closes = closes.dropna(axis=1, how='all')
+            valid_downloaded_symbols = set(closes.columns)
+        else:
+            # Fallback if only 1 symbol was somehow passed/returned
+            valid_downloaded_symbols = {closes.name}
+            closes = closes.to_frame()
+
+        # Print table header to console
+        print(f"{'Symbol':<18} | {'1-Week Return':<15} | {'3-Month Return':<15}")
+        print("-" * 55)
+        
         for react_symbol in UNIVERSE_SYMBOLS:
             try:
-                # We look up the data using the YAHOO symbol
                 yahoo_symbol = YAHOO_MAP.get(react_symbol, react_symbol)
                 
-                col = closes if len(UNIVERSE_SYMBOLS) == 1 else closes[yahoo_symbol]
+                # Skip if the symbol failed to download/was dropped
+                if yahoo_symbol not in valid_downloaded_symbols:
+                    print(f"{react_symbol:<18} | {'DROPPED (No Data)':<15} | {'-':<15}")
+                    continue
+                
+                # Extract the specific column
+                col = closes[yahoo_symbol]
+                
+                # Drop leading NAs (e.g., if a stock listed midway through the 3 months)
                 col = col.dropna()
                 
                 if len(col) < 5:
+                    print(f"{react_symbol:<18} | {'DROPPED (< 5 days)':<15} | {'-':<15}")
                     continue 
                     
                 current_price = col.iloc[-1]
@@ -158,17 +184,23 @@ def fetch_market_data():
                 ret1w = ((current_price - price_1w) / price_1w) * 100
                 ret3m = ((current_price - price_3m) / price_3m) * 100
                 
-                # But we SAVE the data under the original REACT symbol!
+                # Save the data under the original REACT symbol
                 results[react_symbol] = {
                     "ret1w": round(float(ret1w), 2),
                     "ret3m": round(float(ret3m), 2)
                 }
-            except Exception:
+                
+                # Print successful row to console
+                print(f"{react_symbol:<18} | {results[react_symbol]['ret1w']:>13} % | {results[react_symbol]['ret3m']:>13} %")
+                
+            except Exception as e:
+                print(f"{react_symbol:<18} | {'ERROR: ' + str(e):<15}")
                 pass 
                 
         with open("market_data.json", "w") as outfile:
             json.dump(results, outfile)
-        print("Successfully generated market_data.json")
+            
+        print(f"\nSuccessfully generated market_data.json with {len(results)} active symbols.")
             
     except Exception as e:
         print(f"Global Error: {str(e)}")
