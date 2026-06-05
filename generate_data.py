@@ -3,7 +3,6 @@ import pandas as pd
 import json
 import time
 
-# True Nifty 500 Universe (500 Most Liquid NSE Stocks)
 UNIVERSE_SYMBOLS = [
     "360ONE.NS", "3MINDIA.NS", "AARTIIND.NS", "AAVAS.NS", "ABB.NS", "ABBOTINDIA.NS", "ABCAPITAL.NS", 
     "ABFRL.NS", "ACC.NS", "ADANIENSOL.NS", "ADANIENT.NS", "ADANIGREEN.NS", "ADANIPORTS.NS", 
@@ -90,83 +89,58 @@ UNIVERSE_SYMBOLS = [
     "ZEEL.NS", "ZENSARTECH.NS", "ZFCVINDIA.NS", "ZYDUSLIFE.NS", "ZYDUSWELL.NS"
 ]
 
-# Translation mapping for specific Yahoo Finance eccentricities
 YAHOO_MAP = {
-    "VARDHMAN.NS": "VTL.NS", 
-    "FIRSTSOURCE.NS": "FSL.NS",
-    "GUJARATGAS.NS": "GUJGASLTD.NS", 
-    "KALYAN.NS": "KALYANKJIL.NS", 
-    "TVSMOTORS.NS": "TVSMOTOR.NS",
-    "FINOLEX.NS": "FINCABLES.NS", 
-    "GMRINFRA.NS": "GMRAIRPORT.NS", 
-    "WELSPUNIND.NS": "WELSPUNLIV.NS", 
-    "MCDOWELL-N.NS": "UNITDSPR.NS", 
-    "MAHINDRAHOLIDAYS.NS": "MHRIL.NS",
-    "CHAMBALFERT.NS": "CHAMBLFERT.NS", 
-    "KPR.NS": "KPRMILL.NS", 
+    "VARDHMAN.NS": "VTL.NS", "FIRSTSOURCE.NS": "FSL.NS", "GUJARATGAS.NS": "GUJGASLTD.NS", 
+    "KALYAN.NS": "KALYANKJIL.NS", "TVSMOTORS.NS": "TVSMOTOR.NS", "FINOLEX.NS": "FINCABLES.NS", 
+    "GMRINFRA.NS": "GMRAIRPORT.NS", "WELSPUNIND.NS": "WELSPUNLIV.NS", "MCDOWELL-N.NS": "UNITDSPR.NS", 
+    "MAHINDRAHOLIDAYS.NS": "MHRIL.NS", "CHAMBALFERT.NS": "CHAMBLFERT.NS", "KPR.NS": "KPRMILL.NS", 
     "IPCA.NS": "IPCALAB.NS"
 }
 
 def fetch_market_data():
     results = {}
-    
-    # Map symbols for downloading
     yahoo_symbols_to_download = [YAHOO_MAP.get(sym, sym) for sym in UNIVERSE_SYMBOLS]
-    
-    # Remove duplicates
     all_tickers = list(set(yahoo_symbols_to_download))
 
     try:
-        print(f"Downloading data for {len(all_tickers)} individual tickers (Chunked to prevent rate-limiting)...\n")
-        
+        print(f"Downloading data for {len(all_tickers)} individual tickers...\n")
         chunk_size = 50
-        closes_list = []
+        closes_dict = {}
         
         for i in range(0, len(all_tickers), chunk_size):
             chunk = all_tickers[i:i + chunk_size]
             print(f"Fetching batch {(i//chunk_size) + 1}/{(len(all_tickers)//chunk_size) + 1}...")
             
-            # Download chunk with threads=False to stay under API limits
+            # Period="4mo" is correct here for 3-month lookback
             df = yf.download(chunk, period="4mo", interval="1d", progress=False, threads=False)
             
             if df.empty:
-                print(f"  -> Warning: Batch {(i//chunk_size) + 1} returned completely empty data.")
                 continue
                 
-            # --- ROBUST MULTI-INDEX HANDLING ---
-            # yfinance alters its column structure frequently. This guarantees we isolate the correct price level.
+            # Dictionary extraction bypasses MultiIndex column alignment bugs
             if isinstance(df.columns, pd.MultiIndex):
-                if 'Adj Close' in df.columns.get_level_values(0) or 'Close' in df.columns.get_level_values(0):
-                    c = df['Adj Close'] if 'Adj Close' in df.columns.get_level_values(0) else df['Close']
+                if 'Close' in df.columns.get_level_values(0):
+                    c = df['Close']
                 else:
-                    c = df.xs('Adj Close', level=1, axis=1) if 'Adj Close' in df.columns.get_level_values(1) else df.xs('Close', level=1, axis=1)
+                    c = df.xs('Close', level=1, axis=1)
+                
+                for sym in c.columns:
+                    closes_dict[sym] = c[sym]
             else:
-                c = df[['Adj Close']] if 'Adj Close' in df.columns else df[['Close']]
-                if len(chunk) == 1:
-                    c.columns = [chunk[0]]
+                if 'Close' in df.columns and len(chunk) == 1:
+                    closes_dict[chunk[0]] = df['Close']
             
-            closes_list.append(c)
-            time.sleep(1.5)  # Breathe to prevent Yahoo IP Ban
+            time.sleep(1.5) 
             
-        if not closes_list:
-            print("\nFatal Error: All downloads were blocked by Yahoo API.")
+        if not closes_dict:
+            print("\nFatal Error: All downloads were blocked or empty.")
             return
             
-        # Combine all successful chunks into one global dataframe
-        closes = pd.concat(closes_list, axis=1)
-        
-        # --- DATA ALIGNMENT & CLEANUP ---
-        closes = closes.ffill()
-        closes = closes.dropna(how='all')
-        
-        if isinstance(closes, pd.DataFrame):
-            # Drop duplicated columns if any chunks overlapped
-            closes = closes.loc[:, ~closes.columns.duplicated()]
-            closes = closes.dropna(axis=1, how='all')
-            valid_downloaded_symbols = set(closes.columns)
-        else:
-            valid_downloaded_symbols = {closes.name}
-            closes = closes.to_frame()
+        # Rebuild a perfectly clean DataFrame from the dictionary
+        closes = pd.DataFrame(closes_dict)
+        closes.index = pd.to_datetime(closes.index).normalize()
+        closes = closes.ffill().dropna(how='all')
+        valid_downloaded_symbols = set(closes.columns)
 
         print(f"\n{'Symbol':<18} | {'1-Week Return':<15} | {'3-Month Return':<15}")
         print("-" * 55)
@@ -175,14 +149,12 @@ def fetch_market_data():
             try:
                 yahoo_symbol = YAHOO_MAP.get(react_symbol, react_symbol)
                 
-                # If a symbol is completely un-fetchable or actively delisted
                 if yahoo_symbol not in valid_downloaded_symbols:
                     print(f"{react_symbol:<18} | {'DROPPED (API Block / Delisted)':<28}")
                     continue
                 
                 col = closes[yahoo_symbol].dropna()
                 
-                # If a symbol just IPO'd within the last week
                 if len(col) < 5:
                     print(f"{react_symbol:<18} | {'DROPPED (< 5 days of data)':<28}")
                     continue 
@@ -190,14 +162,12 @@ def fetch_market_data():
                 current_date = col.index[-1]
                 current_price = col.iloc[-1]
                 
-                # Using Exact Calendar Dates to match Yahoo Web
                 target_1w = current_date - pd.Timedelta(days=7) 
                 target_3m = current_date - pd.DateOffset(months=3) 
                 
                 price_1w = col.asof(target_1w)
                 price_3m = col.asof(target_3m)
                 
-                # If a symbol IPO'd within the last 3 months
                 if pd.isna(price_1w) or pd.isna(price_3m):
                     print(f"{react_symbol:<18} | {'DROPPED (Not enough history)':<28}")
                     continue 
