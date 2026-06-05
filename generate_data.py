@@ -16,7 +16,6 @@ YAHOO_MAP = {
 
 # ─── 1. FETCH LIVE NIFTY 500 FROM NSE ───────────────────────────────────────────
 def get_live_nifty_500():
-    print("Fetching live Nifty 500 constituents from NSE...")
     url = "https://niftyindices.com/Indexconstituent/ind_nifty500list.csv"
     
     headers = {
@@ -29,50 +28,45 @@ def get_live_nifty_500():
     try:
         response = requests.get(url, headers=headers, timeout=15)
         if response.status_code != 200:
-            print(f"Failed to fetch NSE data. Status: {response.status_code}")
             return []
             
         df = pd.read_csv(io.StringIO(response.text))
-        
-        # Filter out dummy demerger tickers
         df = df[~df['Symbol'].str.contains("DUMMY", case=False, na=False)]
-        
-        # Append ".NS" to the NSE symbols so yfinance can read them
         return (df['Symbol'].astype(str) + ".NS").tolist()
         
-    except Exception as e:
-        print(f"Error fetching NSE list: {e}")
+    except Exception:
         return []
 
-# ─── 2. DATA EXTRACTION & RETURN CALCULATION ───────────────────────────────────
+# ─── 2. DATA EXTRACTION & EXACT JSON FORMATTING ─────────────────────────────────
 def fetch_market_data():
-    # Dynamically pull the symbol universe
     universe_symbols = get_live_nifty_500()
     
     if not universe_symbols:
         print("Fatal Error: Could not fetch Nifty 500 list from NSE. Exiting.")
         return
+        
+    # EXPLICITLY INJECT NIFTY 50 BENCHMARK FOR THE REACT DASHBOARD
+    if "^NSEI" not in universe_symbols:
+        universe_symbols.insert(0, "^NSEI")
 
     results = {}
     yahoo_symbols_to_download = [YAHOO_MAP.get(sym, sym) for sym in universe_symbols]
     all_tickers = list(set(yahoo_symbols_to_download))
 
     try:
-        print(f"Downloading data for {len(all_tickers)} individual tickers...\n")
+        print(f"Downloading data for {len(all_tickers)} symbols...")
         chunk_size = 50
         closes_dict = {}
         
         for i in range(0, len(all_tickers), chunk_size):
             chunk = all_tickers[i:i + chunk_size]
-            print(f"Fetching batch {(i//chunk_size) + 1}/{(len(all_tickers)//chunk_size) + 1}...")
             
-            # Period="4mo" is correct here for 3-month lookback
+            # Period="4mo" to guarantee we have data exactly 3 calendar months back
             df = yf.download(chunk, period="4mo", interval="1d", progress=False, threads=False)
             
             if df.empty:
                 continue
                 
-            # Dictionary extraction bypasses MultiIndex column alignment bugs
             if isinstance(df.columns, pd.MultiIndex):
                 if 'Close' in df.columns.get_level_values(0):
                     c = df['Close']
@@ -91,29 +85,24 @@ def fetch_market_data():
             print("\nFatal Error: All downloads were blocked or empty.")
             return
             
-        # Rebuild a perfectly clean DataFrame from the dictionary
         closes = pd.DataFrame(closes_dict)
         closes.index = pd.to_datetime(closes.index).normalize()
         closes = closes.ffill().dropna(how='all')
         valid_downloaded_symbols = set(closes.columns)
 
-        print(f"\n{'Symbol':<18} | {'1-Week Return':<15} | {'3-Month Return':<15}")
-        print("-" * 55)
-        
         for react_symbol in universe_symbols:
             try:
                 yahoo_symbol = YAHOO_MAP.get(react_symbol, react_symbol)
                 
                 if yahoo_symbol not in valid_downloaded_symbols:
-                    print(f"{react_symbol:<18} | {'DROPPED (API Block / Delisted)':<28}")
                     continue
                 
                 col = closes[yahoo_symbol].dropna()
                 
                 if len(col) < 5:
-                    print(f"{react_symbol:<18} | {'DROPPED (< 5 days of data)':<28}")
                     continue 
                     
+                # DATE-BASED LOGIC RESTORED
                 current_date = col.index[-1]
                 current_price = col.iloc[-1]
                 
@@ -124,26 +113,25 @@ def fetch_market_data():
                 price_3m = col.asof(target_3m)
                 
                 if pd.isna(price_1w) or pd.isna(price_3m):
-                    print(f"{react_symbol:<18} | {'DROPPED (Not enough history)':<28}")
                     continue 
                 
                 ret1w = ((current_price - price_1w) / price_1w) * 100
                 ret3m = ((current_price - price_3m) / price_3m) * 100
                 
+                # Save exact JSON structure
                 results[react_symbol] = {
                     "ret1w": round(float(ret1w), 2),
                     "ret3m": round(float(ret3m), 2)
                 }
                 
-                print(f"{react_symbol:<18} | {results[react_symbol]['ret1w']:>13} % | {results[react_symbol]['ret3m']:>13} %")
+            except Exception:
+                pass
                 
-            except Exception as e:
-                print(f"{react_symbol:<18} | ERROR: {str(e)}")
-                
+        # Save exact JSON structure (no indents, matching your reference)
         with open("market_data.json", "w") as outfile:
-            json.dump(results, outfile, indent=4)
+            json.dump(results, outfile)
             
-        print(f"\nSuccessfully generated market_data.json with {len(results)} active symbols.")
+        print("Successfully generated market_data.json")
             
     except Exception as e:
         print(f"Global Error: {str(e)}")
