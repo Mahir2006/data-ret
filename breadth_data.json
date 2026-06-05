@@ -1,12 +1,1 @@
-{
-    "advancers": 244,
-    "decliners": 256,
-    "unchanged": 0,
-    "totalStocks": 500,
-    "pctAboveSMA50": 52.6,
-    "pctAboveSMA200": 44.6,
-    "nifty500Change1W": -0.77,
-    "nifty500Change1M": -2.77,
-    "goldenCross": false,
-    "deathCross": true
-}
+{"overall": {"aboveEma50": 243, "totalStocks": 500, "advancers": 203, "decliners": 295, "unchanged": 2, "newHighs52W": 52, "newLows52W": 31, "aboveEma20": 214, "aboveEma200": 237, "aboveSma200": 229, "nifty500Change1W": -0.77, "nifty500Change1M": -2.77}, "sectors": [{"name": "Financial Services", "total": 82, "aboveEma50": 30, "change1W": -2.68}, {"name": "Information Technology", "total": 54, "aboveEma50": 27, "change1W": -0.81}, {"name": "Consumer Discretionary", "total": 68, "aboveEma50": 18, "change1W": -1.38}, {"name": "Healthcare", "total": 45, "aboveEma50": 32, "change1W": -0.15}, {"name": "Industrials & Capital Goods", "total": 62, "aboveEma50": 27, "change1W": -2.01}, {"name": "FMCG", "total": 38, "aboveEma50": 7, "change1W": -2.11}, {"name": "Energy & Oil/Gas", "total": 32, "aboveEma50": 20, "change1W": -0.79}, {"name": "Metals & Mining", "total": 28, "aboveEma50": 14, "change1W": -2.17}, {"name": "Automobiles", "total": 35, "aboveEma50": 10, "change1W": -0.46}, {"name": "Utilities & Power", "total": 26, "aboveEma50": 8, "change1W": 1.09}, {"name": "Chemicals", "total": 22, "aboveEma50": 7, "change1W": -1.47}, {"name": "Telecom & Media", "total": 8, "aboveEma50": 4, "change1W": 1.99}], "history": [{"week": "W-11", "breadth": 20.0}, {"week": "W-10", "breadth": 16.4}, {"week": "W-9", "breadth": 21.0}, {"week": "W-8", "breadth": 60.2}, {"week": "W-7", "breadth": 79.2}, {"week": "W-6", "breadth": 68.4}, {"week": "W-5", "breadth": 68.0}, {"week": "W-4", "breadth": 79.8}, {"week": "W-3", "breadth": 57.0}, {"week": "W-2", "breadth": 54.4}, {"week": "W-1", "breadth": 54.6}, {"week": "Curr", "breadth": 48.6}], "signals": {"goldenCross": false, "deathCross": true, "divergence": "none", "trend": "downtrend", "momentumScore": 42, "breadthThrust": false, "marketRegime": "risk-off"}}
