@@ -1,10 +1,9 @@
-import os
+import yfinance as yf
+import pandas as pd
 import json
 import time
 import requests
 import io
-import pandas as pd
-import yfinance as yf
 
 # Edge-case mappings for Yahoo Finance ticker mismatches
 YAHOO_MAP = {
@@ -15,25 +14,9 @@ YAHOO_MAP = {
     "IPCA.NS": "IPCALAB.NS", "M&M.NS": "M&M.NS", "BAJAJ-AUTO.NS": "BAJAJ-AUTO.NS"
 }
 
-# Target sectors dictionary mapping for sector breadth
-TARGET_SECTORS = {
-    "Financial Services": {"target_count": 82, "symbols": ["HDFCBANK.NS", "ICICIBANK.NS", "KOTAKBANK.NS", "AXISBANK.NS", "INDUSINDBK.NS", "BANDHANBNK.NS", "FEDERALBNK.NS", "IDFCFIRSTB.NS", "RBLBANK.NS", "SBIN.NS", "BANKBARODA.NS", "PNB.NS", "CANBK.NS", "UNIONBANK.NS", "INDIANB.NS", "BAJFINANCE.NS", "BAJAJFINSV.NS", "CHOLAFIN.NS", "MUTHOOTFIN.NS", "MANAPPURAM.NS", "SHRIRAMFIN.NS", "LICHSGFIN.NS", "PNBHOUSING.NS", "CANFINHOME.NS", "HOMEFIRST.NS", "BSE.NS", "MCX.NS", "CDSL.NS", "CAMS.NS", "KFINTECH.NS", "ANGELONE.NS", "360ONE.NS", "MOTILALOFS.NS", "NUVAMA.NS", "SBILIFE.NS", "HDFCLIFE.NS", "LICI.NS", "MAXHEALTH.NS", "ICICIGI.NS", "NIACL.NS", "GICRE.NS", "STARHEALTH.NS", "PAYTM.NS", "POLICYBZR.NS", "DLF.NS", "GODREJPROP.NS", "OBEROIRLTY.NS", "PRESTIGE.NS", "SOBHA.NS", "BRIGADE.NS", "MAHLIFE.NS", "PHOENIXLTD.NS", "EMBASSY.NS", "MINDSPACE.NS"]},
-    "Information Technology": {"target_count": 54, "symbols": ["TCS.NS", "INFY.NS", "WIPRO.NS", "HCLTECH.NS", "TECHM.NS", "MPHASIS.NS", "PERSISTENT.NS", "COFORGE.NS", "FIRSTSOURCE.NS", "MASTEK.NS", "RATEGAIN.NS", "KPITTECH.NS"]},
-    "Consumer Discretionary": {"target_count": 68, "symbols": ["VOLTAS.NS", "BLUESTARCO.NS", "WHIRLPOOL.NS", "HAVELLS.NS", "CROMPTON.NS", "VGUARD.NS", "TITAN.NS", "KALYAN.NS", "SENCO.NS", "PCJEWELLER.NS", "KANSAINER.NS", "AKZOINDIA.NS", "PAGEIND.NS", "TRENT.NS", "RAYMOND.NS", "MANYAVAR.NS", "ARVIND.NS", "TRIDENT.NS", "KPR.NS", "VARDHMAN.NS", "WELSPUNIND.NS", "INDHOTEL.NS", "LEMONTREE.NS", "CHALET.NS", "MAHINDRAHOLIDAYS.NS", "JUBLFOOD.NS", "DEVYANI.NS", "WESTLIFE.NS", "SAPPHIRE.NS", "NYKAA.NS", "DMART.NS", "IRCTC.NS", "EASEMYTRIP.NS", "THOMASCOOK.NS"]},
-    "Healthcare": {"target_count": 45, "symbols": ["SUNPHARMA.NS", "DRREDDY.NS", "CIPLA.NS", "DIVISLAB.NS", "LUPIN.NS", "AUROPHARMA.NS", "TORNTPHARM.NS", "BIOCON.NS", "IPCA.NS", "ALKEM.NS", "GRANULES.NS", "SUVEN.NS", "APOLLOHOSP.NS", "FORTIS.NS", "METROPOLIS.NS", "LALPATHLAB.NS", "THYROCARE.NS"]},
-    "Industrials & Capital Goods": {"target_count": 62, "symbols": ["HAL.NS", "BDL.NS", "BEML.NS", "COCHINSHIP.NS", "MAZDOCK.NS", "PARAS.NS", "ABB.NS", "SIEMENS.NS", "BHEL.NS", "CUMMINSIND.NS", "THERMAX.NS", "AIAENG.NS", "LT.NS", "NCC.NS", "KNRCON.NS", "PNCINFRA.NS", "GRINFRA.NS", "POLYCAB.NS", "APLAPOLLO.NS", "SUPREMEIND.NS", "ASTRAL.NS", "FINOLEX.NS", "INDIGO.NS", "BLUEDART.NS", "DELHIVERY.NS", "MAHLOG.NS", "GESHIP.NS", "ADANIPORTS.NS", "CONCOR.NS", "ULTRACEMCO.NS", "GRASIM.NS", "AMBUJACEM.NS", "ACC.NS", "JKCEMENT.NS", "RAMCOCEM.NS", "SHREECEM.NS", "KAJARIACER.NS", "ORIENTBELL.NS", "ASIANPAINT.NS", "TNPL.NS", "JKPAPER.NS", "CENTURYPLY.NS", "GREENPLY.NS", "GMRINFRA.NS"]},
-    "FMCG": {"target_count": 38, "symbols": ["HINDUNILVR.NS", "COLPAL.NS", "EMAMILTD.NS", "GILLETTE.NS", "BAJAJCON.NS", "GODREJCP.NS", "JYOTHYLAB.NS", "NESTLEIND.NS", "BRITANNIA.NS", "DABUR.NS", "MARICO.NS", "BIKAJI.NS", "TATACONSUM.NS", "MCDOWELL-N.NS", "UBL.NS", "RADICO.NS", "GLOBUSSPR.NS", "ITC.NS", "GODFRYPHLP.NS", "VSTIND.NS"]},
-    "Energy & Oil/Gas": {"target_count": 32, "symbols": ["ONGC.NS", "OIL.NS", "RELIANCE.NS", "BPCL.NS", "IOC.NS", "HINDPETRO.NS", "IGL.NS", "MGL.NS", "GAIL.NS", "ATGL.NS", "GSPL.NS", "CASTROLIND.NS", "GUJARATGAS.NS"]},
-    "Metals & Mining": {"target_count": 28, "symbols": ["TATASTEEL.NS", "JSWSTEEL.NS", "SAIL.NS", "JINDALSTEL.NS", "NMDC.NS", "HINDALCO.NS", "VEDL.NS", "NATIONALUM.NS", "HINDCOPPER.NS", "COALINDIA.NS", "MOIL.NS"]},
-    "Automobiles": {"target_count": 35, "symbols": ["MARUTI.NS", "TMCV.NS", "M&M.NS", "BAJAJ-AUTO.NS", "HEROMOTOCO.NS", "TVSMOTORS.NS", "EICHERMOT.NS", "ASHOKLEY.NS", "ESCORTS.NS", "FORCEMOT.NS", "MOTHERSON.NS", "BOSCHLTD.NS", "BHARATFORG.NS", "APOLLOTYRE.NS", "MRF.NS", "BALKRISIND.NS", "EXIDEIND.NS", "SUNDRMFAST.NS"]},
-    "Utilities & Power": {"target_count": 26, "symbols": ["NTPC.NS", "TATAPOWER.NS", "JSWENERGY.NS", "TORNTPOWER.NS", "CESC.NS", "POWERGRID.NS", "RECLTD.NS", "PFC.NS", "ADANIENSOL.NS"]},
-    "Chemicals": {"target_count": 22, "symbols": ["PIDILITIND.NS", "SRF.NS", "DEEPAKNTR.NS", "NAVINFLUOR.NS", "AARTIIND.NS", "ATUL.NS", "AAVAS.NS", "GHCL.NS", "TATACHEM.NS", "APCOTEXIND.NS", "UPL.NS", "PIIND.NS", "RALLIS.NS", "COROMANDEL.NS", "CHAMBALFERT.NS", "GSFC.NS"]},
-    "Telecom & Media": {"target_count": 8, "symbols": ["ZEEL.NS", "SUNTV.NS", "NETWORK18.NS", "PVRINOX.NS", "NAZARA.NS", "SAREGAMA.NS", "JAGRAN.NS", "DBCORP.NS", "HTMEDIA.NS", "BHARTIARTL.NS", "IDEA.NS", "TATACOMM.NS", "RAILTEL.NS", "HFCL.NS", "TEJASNET.NS", "STLTECH.NS"]}
-}
-
 # ─── 1. FETCH LIVE NIFTY 500 FROM NSE ───────────────────────────────────────────
 def get_live_nifty_500():
-    print("Fetching live Nifty 500 constituents from NSE...")
+    print("Fetching live Nifty 500 constituents and metadata from NSE...")
     url = "https://niftyindices.com/Indexconstituent/ind_nifty500list.csv"
     
     headers = {
@@ -47,19 +30,28 @@ def get_live_nifty_500():
         response = requests.get(url, headers=headers, timeout=15)
         if response.status_code != 200:
             print(f"Failed to fetch NSE data. Status: {response.status_code}")
-            return []
+            return [], {}
             
         df = pd.read_csv(io.StringIO(response.text))
         df = df[~df['Symbol'].str.contains("DUMMY", case=False, na=False)]
-        return (df['Symbol'].astype(str) + ".NS").tolist()
+        
+        symbols = (df['Symbol'].astype(str) + ".NS").tolist()
+        
+        # Build dynamic metadata mapping
+        metadata = {}
+        for _, row in df.iterrows():
+            sym = str(row['Symbol']) + ".NS"
+            metadata[sym] = str(row.get('Industry', 'Uncategorized')).strip()
+            
+        return symbols, metadata
         
     except Exception as e:
         print(f"Error fetching NSE list: {e}")
-        return []
+        return [], {}
 
 # ─── 2. BREADTH DATA CALCULATION & FORMATTING ─────────────────────────────────
 def generate_breadth_data():
-    universe_symbols = get_live_nifty_500()
+    universe_symbols, metadata = get_live_nifty_500()
     
     if not universe_symbols:
         print("Fatal Error: Could not fetch Nifty 500 list from NSE. Exiting.")
@@ -68,6 +60,7 @@ def generate_breadth_data():
     # EXPLICITLY INJECT NIFTY 50 BENCHMARK FOR THE DASHBOARD
     if "^NSEI" not in universe_symbols:
         universe_symbols.insert(0, "^NSEI")
+        metadata["^NSEI"] = "Benchmark"
 
     print("Starting TRUE market breadth calculation (Dynamic 500-stock universe)...")
     
@@ -163,25 +156,38 @@ def generate_breadth_data():
             golden_cross = False; death_cross = False
             print("Warning: Benchmark Nifty 50 (^NSEI) data was missing.")
             
-        # Sectors logic (Date-based)
+        # Sectors logic (DYNAMICALLY GROUPED)
         sectors_json = []
-        for sec_name, sec_data in TARGET_SECTORS.items():
-            sec_syms = [YAHOO_MAP.get(s, s) for s in sec_data["symbols"]]
-            valid_sec_syms = [s for s in sec_syms if s in valid_cols]
-            if valid_sec_syms:
-                sec_df = stocks_df[valid_sec_syms]
-                pct_above = (sec_df.iloc[-1] > ema50[valid_sec_syms].iloc[-1]).sum() / len(valid_sec_syms)
+        sectors_map = {}
+        
+        # Map successfully downloaded symbols back to their dynamic sectors
+        for react_sym in universe_symbols:
+            if react_sym == "^NSEI": continue
+            yahoo_sym = YAHOO_MAP.get(react_sym, react_sym)
+            
+            if yahoo_sym in valid_cols:
+                sec_name = metadata.get(react_sym, "Uncategorized")
+                sectors_map.setdefault(sec_name, []).append(yahoo_sym)
                 
-                sec_curr_sum = sec_df.iloc[-1].sum()
-                sec_1w_sum = sec_df.asof(target_1w).sum()
-                sec_ret = ((sec_curr_sum - sec_1w_sum) / sec_1w_sum) * 100
-                
-                sectors_json.append({
-                    "name": sec_name,
-                    "total": sec_data["target_count"],
-                    "aboveEma50": int(pct_above * sec_data["target_count"]),
-                    "change1W": round(sec_ret, 2)
-                })
+        for sec_name, valid_sec_syms in sectors_map.items():
+            if not valid_sec_syms: continue
+            
+            sec_df = stocks_df[valid_sec_syms]
+            target_count = len(valid_sec_syms)
+            
+            # Use iloc[-1] arrays safely to count how many are > ema50
+            above_count = (sec_df.iloc[-1] > ema50[valid_sec_syms].iloc[-1]).sum()
+            
+            sec_curr_sum = sec_df.iloc[-1].sum()
+            sec_1w_sum = sec_df.asof(target_1w).sum()
+            sec_ret = ((sec_curr_sum - sec_1w_sum) / sec_1w_sum) * 100 if sec_1w_sum != 0 else 0
+            
+            sectors_json.append({
+                "name": sec_name,
+                "total": target_count,
+                "aboveEma50": int(above_count),
+                "change1W": round(sec_ret, 2)
+            })
                 
         # History logic (Date-based 11-week loop)
         history_json = []
@@ -209,7 +215,7 @@ def generate_breadth_data():
         with open("breadth_data.json", "w") as outfile:
             json.dump({ "overall": overall, "sectors": sectors_json, "history": history_json, "signals": signals_json }, outfile)
             
-        print("\nSuccessfully generated breadth_data.json in the required format.")
+        print("\nSuccessfully generated dynamic breadth_data.json.")
             
     except Exception as e:
         print(f"Global Error: {str(e)}")
