@@ -125,7 +125,7 @@ def generate_breadth_data():
             chunk = all_tickers[i:i + chunk_size]
             print(f"Fetching batch {(i//chunk_size) + 1}/{(len(all_tickers)//chunk_size) + 1}...")
             
-            df = yf.download(chunk, period="6m", interval="1d", progress=False, threads=False)
+            df = yf.download(chunk, period="6mo", interval="1d", progress=False, threads=False)
             
             if df.empty:
                 print(f"  -> Warning: Batch {(i//chunk_size) + 1} returned completely empty data.")
