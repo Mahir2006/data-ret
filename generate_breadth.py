@@ -4,7 +4,6 @@ import time
 import pandas as pd
 import yfinance as yf
 
-# True Nifty 500 Universe (500 Most Liquid NSE Stocks)
 UNIVERSE_SYMBOLS = [
     "360ONE.NS", "3MINDIA.NS", "AARTIIND.NS", "AAVAS.NS", "ABB.NS", "ABBOTINDIA.NS", "ABCAPITAL.NS", 
     "ABFRL.NS", "ACC.NS", "ADANIENSOL.NS", "ADANIENT.NS", "ADANIGREEN.NS", "ADANIPORTS.NS", 
@@ -91,20 +90,11 @@ UNIVERSE_SYMBOLS = [
     "ZEEL.NS", "ZENSARTECH.NS", "ZFCVINDIA.NS", "ZYDUSLIFE.NS", "ZYDUSWELL.NS"
 ]
 
-# Translation mapping for specific Yahoo Finance eccentricities
 YAHOO_MAP = {
-    "VARDHMAN.NS": "VTL.NS", 
-    "FIRSTSOURCE.NS": "FSL.NS",
-    "GUJARATGAS.NS": "GUJGASLTD.NS", 
-    "KALYAN.NS": "KALYANKJIL.NS", 
-    "TVSMOTORS.NS": "TVSMOTOR.NS",
-    "FINOLEX.NS": "FINCABLES.NS", 
-    "GMRINFRA.NS": "GMRAIRPORT.NS", 
-    "WELSPUNIND.NS": "WELSPUNLIV.NS", 
-    "MCDOWELL-N.NS": "UNITDSPR.NS", 
-    "MAHINDRAHOLIDAYS.NS": "MHRIL.NS",
-    "CHAMBALFERT.NS": "CHAMBLFERT.NS", 
-    "KPR.NS": "KPRMILL.NS", 
+    "VARDHMAN.NS": "VTL.NS", "FIRSTSOURCE.NS": "FSL.NS", "GUJARATGAS.NS": "GUJGASLTD.NS", 
+    "KALYAN.NS": "KALYANKJIL.NS", "TVSMOTORS.NS": "TVSMOTOR.NS", "FINOLEX.NS": "FINCABLES.NS", 
+    "GMRINFRA.NS": "GMRAIRPORT.NS", "WELSPUNIND.NS": "WELSPUNLIV.NS", "MCDOWELL-N.NS": "UNITDSPR.NS", 
+    "MAHINDRAHOLIDAYS.NS": "MHRIL.NS", "CHAMBALFERT.NS": "CHAMBLFERT.NS", "KPR.NS": "KPRMILL.NS", 
     "IPCA.NS": "IPCALAB.NS"
 }
 
@@ -115,45 +105,42 @@ def generate_breadth_data():
     all_tickers = list(set(yahoo_symbols_to_download)) + ["^NSEI"]
 
     try:
-        print(f"Downloading data for {len(all_tickers)} individual tickers (Chunked to prevent rate-limiting)...\n")
-        
+        print(f"Downloading data for {len(all_tickers)} individual tickers...\n")
         chunk_size = 50
-        closes_list = []
+        closes_dict = {}
         
-        # Download in 50-stock chunks to bypass Yahoo anti-bot filters
         for i in range(0, len(all_tickers), chunk_size):
             chunk = all_tickers[i:i + chunk_size]
             print(f"Fetching batch {(i//chunk_size) + 1}/{(len(all_tickers)//chunk_size) + 1}...")
             
+            # FIXED: 6mo syntax for yahoo finance
             df = yf.download(chunk, period="6mo", interval="1d", progress=False, threads=False)
             
             if df.empty:
-                print(f"  -> Warning: Batch {(i//chunk_size) + 1} returned completely empty data.")
                 continue
                 
-            # Robust Multi-Index Handling
+            # Dictionary extraction bypasses MultiIndex column alignment bugs
             if isinstance(df.columns, pd.MultiIndex):
-                if 'Adj Close' in df.columns.get_level_values(0) or 'Close' in df.columns.get_level_values(0):
-                    c = df['Adj Close'] if 'Adj Close' in df.columns.get_level_values(0) else df['Close']
+                if 'Close' in df.columns.get_level_values(0):
+                    c = df['Close']
                 else:
-                    c = df.xs('Adj Close', level=1, axis=1) if 'Adj Close' in df.columns.get_level_values(1) else df.xs('Close', level=1, axis=1)
+                    c = df.xs('Close', level=1, axis=1)
+                
+                for sym in c.columns:
+                    closes_dict[sym] = c[sym]
             else:
-                c = df[['Adj Close']] if 'Adj Close' in df.columns else df[['Close']]
-                if len(chunk) == 1:
-                    c.columns = [chunk[0]]
+                if 'Close' in df.columns and len(chunk) == 1:
+                    closes_dict[chunk[0]] = df['Close']
             
-            closes_list.append(c)
-            time.sleep(1.5)  # Breathe to prevent Yahoo IP Ban
+            time.sleep(1.5) 
             
-        if not closes_list:
-            print("\nFatal Error: All downloads were blocked by Yahoo API.")
+        if not closes_dict:
+            print("\nFatal Error: All downloads were blocked or empty.")
             return
             
-        closes = pd.concat(closes_list, axis=1)
+        closes = pd.DataFrame(closes_dict)
+        closes.index = pd.to_datetime(closes.index).normalize()
         closes = closes.ffill().dropna(how='all')
-        
-        # Drop duplicated columns if any chunks overlapped
-        closes = closes.loc[:, ~closes.columns.duplicated()]
 
     except Exception as e:
         print(f"Error downloading data from yfinance: {e}")
