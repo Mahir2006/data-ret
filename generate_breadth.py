@@ -77,9 +77,9 @@ def fetch_breadth_data():
         df = yf.download(symbols_space, period="1y", progress=False)
         
         # --- ROBUST DATA ALIGNMENT ---
-        closes = df['Close'].ffill()                  # Forward fill to align dates
-        closes = closes.dropna(how='all')             # Drop market holidays
-        closes = closes.dropna(axis=1, how='all')     # Drop completely invalid symbols
+        closes = df['Close'].ffill()                  
+        closes = closes.dropna(how='all')             
+        closes = closes.dropna(axis=1, how='all')     
         
         valid_cols = [c for c in closes.columns if c != '^NSEI']
         stocks_df = closes[valid_cols]
@@ -91,7 +91,6 @@ def fetch_breadth_data():
 
         print(f"Processing Breadth for {total_tracked} active stocks...\n")
         
-        # Calculate moving averages over the dataset
         ema20 = stocks_df.ewm(span=20, adjust=False).mean()
         ema50 = stocks_df.ewm(span=50, adjust=False).mean()
         ema200 = stocks_df.ewm(span=200, adjust=False).mean()
@@ -99,11 +98,9 @@ def fetch_breadth_data():
         high52 = stocks_df.rolling(window=252, min_periods=50).max()
         low52 = stocks_df.rolling(window=252, min_periods=50).min()
         
-        # Get specific timeframes safely
         curr_px = stocks_df.iloc[-1]
         px_1w = stocks_df.iloc[-5] if len(stocks_df) >= 5 else stocks_df.iloc[0]
         
-        # Scale to match the UI expectation (out of 500)
         mul = 500 / total_tracked
         
         overall = {
@@ -119,7 +116,6 @@ def fetch_breadth_data():
             "aboveSma200": int((curr_px > sma200.iloc[-1]).sum() * mul)
         }
         
-        # Nifty 50 Calculations safely
         nifty = closes.get('^NSEI')
         if nifty is not None and not nifty.isna().all():
             nifty = nifty.dropna()
@@ -141,7 +137,6 @@ def fetch_breadth_data():
             death_cross = False
             print("Warning: Benchmark Nifty 50 (^NSEI) data was missing.")
             
-        # Process Sectors
         sectors_json = []
         print(f"{'Sector':<30} | {'Active/Target':<15} | {'% > EMA50':<12} | {'1W Change':<10}")
         print("-" * 75)
@@ -154,7 +149,6 @@ def fetch_breadth_data():
                 sec_df = stocks_df[valid_sec_syms]
                 pct_above = (sec_df.iloc[-1] > ema50[valid_sec_syms].iloc[-1]).sum() / len(valid_sec_syms)
                 
-                # Protect against division by zero if entire sector was NA 1-week ago
                 sec_past_sum = sec_df.iloc[-5].sum() if len(sec_df) >= 5 else sec_df.iloc[0].sum()
                 if sec_past_sum > 0:
                     sec_ret = ((sec_df.iloc[-1].sum() - sec_past_sum) / sec_past_sum) * 100
@@ -168,13 +162,11 @@ def fetch_breadth_data():
                     "change1W": round(sec_ret, 2)
                 })
                 
-                # Console Logging for Sectors
                 active_str = f"{len(valid_sec_syms)}/{len(sec_syms)}"
                 pct_str = f"{round(pct_above * 100, 1)}%"
                 ret_str = f"{round(sec_ret, 2)}%"
                 print(f"{sec_name:<30} | {active_str:<15} | {pct_str:<12} | {ret_str:<10}")
                 
-        # Historical Data Array
         history_json = []
         for i in range(11, -1, -1):
             idx = -((i * 5) + 1)
@@ -182,7 +174,6 @@ def fetch_breadth_data():
                 h_pct = ((stocks_df.iloc[idx] > ema50.iloc[idx]).sum() / total_tracked) * 100
                 history_json.append({"week": f"W{-i}" if i > 0 else "Curr", "breadth": round(h_pct, 1)})
                 
-        # Top Level Market Signals
         trend = "uptrend" if overall["nifty500Change1M"] > 2 else "downtrend" if overall["nifty500Change1M"] < -2 else "sideways"
         mom = int((overall["aboveEma20"] / 500) * 100)
         
@@ -196,7 +187,6 @@ def fetch_breadth_data():
             "marketRegime": "risk-on" if trend == "uptrend" else "risk-off" if trend == "downtrend" else "neutral"
         }
         
-        # Write to JSON
         with open("breadth_data.json", "w") as outfile:
             json.dump({ 
                 "overall": overall, 
