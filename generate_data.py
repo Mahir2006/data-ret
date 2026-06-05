@@ -4,7 +4,8 @@ import json
 import time
 import requests
 import io
-
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 # Edge-case mappings for Yahoo Finance ticker mismatches
 YAHOO_MAP = {
     "VARDHMAN.NS": "VTL.NS", "FIRSTSOURCE.NS": "FSL.NS", "GUJARATGAS.NS": "GUJGASLTD.NS", 
@@ -16,18 +17,45 @@ YAHOO_MAP = {
 
 # ─── 1. FETCH LIVE NIFTY 500 FROM NSE ───────────────────────────────────────────
 def get_live_nifty_500():
+    print("Fetching live Nifty 500 constituents and metadata from NSE...")
     url = "https://niftyindices.com/Indexconstituent/ind_nifty500list.csv"
+    base_url = "https://niftyindices.com"
     
+    # Modern browser headers
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive'
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Connection': 'keep-alive',
+        'Referer': 'https://niftyindices.com/'
     }
     
+    # Set up a session with automatic retries and exponential backoff
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=5,              # Maximum number of retries
+        backoff_factor=1.5,   # Wait times: 1.5s, 3s, 6s, etc...
+        status_forcelist=[403, 429, 500, 502, 503, 504],
+        allowed_methods=["GET"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    session.headers.update(headers)
+    
     try:
-        response = requests.get(url, headers=headers, timeout=15)
+        # Step 1: Ping the base URL first to establish a session and get cookies
+        print("Establishing secure session with NSE servers...")
+        session.get(base_url, timeout=20)
+        time.sleep(1.5) # Brief pause to mimic human navigation
+        
+        # Step 2: Request the actual CSV payload with a longer timeout
+        print("Downloading Nifty 500 CSV payload...")
+        response = session.get(url, timeout=30)
+        
         if response.status_code != 200:
+            print(f"Failed to fetch NSE data. Status: {response.status_code}")
             return [], {}
             
         df = pd.read_csv(io.StringIO(response.text))
@@ -35,19 +63,19 @@ def get_live_nifty_500():
         
         symbols = (df['Symbol'].astype(str) + ".NS").tolist()
         
-        # Build metadata map directly from the CSV
+        # Build dynamic metadata mapping
         metadata = {}
         for _, row in df.iterrows():
             sym = str(row['Symbol']) + ".NS"
-            metadata[sym] = {
-                "name": str(row.get('Company Name', sym)),
-                "sector": str(row.get('Industry', 'Uncategorized')).strip()
-            }
+            metadata[sym] = str(row.get('Industry', 'Uncategorized')).strip()
             
         return symbols, metadata
         
+    except requests.exceptions.ReadTimeout:
+        print("\nFATAL: The NSE server is severely throttling traffic and timed out after all 5 retries.")
+        return [], {}
     except Exception as e:
-        print(f"Error fetching live index data: {e}")
+        print(f"Error fetching NSE list: {e}")
         return [], {}
 
 # ─── 2. DATA EXTRACTION & EXACT JSON FORMATTING ─────────────────────────────────
