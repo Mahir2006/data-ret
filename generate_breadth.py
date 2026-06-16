@@ -178,8 +178,9 @@ def generate_breadth_data():
         target_1w = curr_date - pd.Timedelta(days=7)
         target_1m = curr_date - pd.DateOffset(months=1)
         
+        # FIX APPLIED: Safely slice for target dates to avoid the .asof() NaN trap
         curr_px = stocks_df.iloc[-1]
-        px_1w = stocks_df.asof(target_1w)
+        px_1w = stocks_df[stocks_df.index <= target_1w].iloc[-1]
         
         total_tracked = len(valid_cols)
         mul = 500 / total_tracked if total_tracked > 0 else 1
@@ -248,7 +249,8 @@ def generate_breadth_data():
             above_count = (sec_df.iloc[-1] > ema50[valid_sec_syms].iloc[-1]).sum()
             
             sec_curr_sum = sec_df.iloc[-1].sum()
-            sec_1w_sum = sec_df.asof(target_1w).sum()
+            # FIX APPLIED: Reuse the safely calculated px_1w to avoid NaN breaks
+            sec_1w_sum = px_1w[valid_sec_syms].sum() 
             sec_ret = ((sec_curr_sum - sec_1w_sum) / sec_1w_sum) * 100 if sec_1w_sum != 0 else 0
             
             sectors_json.append({
@@ -262,10 +264,14 @@ def generate_breadth_data():
         history_json = []
         for i in range(11, -1, -1):
             target_date_h = curr_date - pd.Timedelta(days=7 * i)
-            h_px = stocks_df.asof(target_date_h)
-            h_ema50 = ema50.asof(target_date_h)
             
-            if not pd.isna(h_px).all():
+            # FIX APPLIED: Safely slice dataframes to grab historical data
+            past_stocks = stocks_df[stocks_df.index <= target_date_h]
+            past_ema = ema50[ema50.index <= target_date_h]
+            
+            if not past_stocks.empty and not past_ema.empty:
+                h_px = past_stocks.iloc[-1]
+                h_ema50 = past_ema.iloc[-1]
                 h_pct = ((h_px > h_ema50).sum() / total_tracked) * 100
                 history_json.append({"week": f"W{-i}" if i > 0 else "Curr", "breadth": round(h_pct, 1)})
                 
