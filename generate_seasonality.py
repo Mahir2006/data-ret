@@ -6,6 +6,7 @@ import requests
 import io
 import datetime
 import calendar
+import random
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -73,38 +74,30 @@ def generate_seasonality():
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     })
 
-    print(f"Downloading 10-year historical data for {len(all_tickers)} symbols in stealth mode...")
+    print(f"Downloading 10-year historical data for {len(all_tickers)} symbols sequentially...")
     closes_dict = {}
     
-    # Reduced chunk size to 20 to avoid Yahoo rate limits
-    chunk_size = 20 
-    
-    for i in range(0, len(all_tickers), chunk_size):
-        chunk = all_tickers[i:i + chunk_size]
-        # Pass the stealth session to yfinance
-        df = yf.download(chunk, period="10y", interval="1d", progress=False, threads=False, session=yf_session)
-        
-        if df.empty: 
-            print(f"⚠️ Chunk {i} to {i+chunk_size} returned empty.")
-            continue
-        
-        if isinstance(df.columns, pd.MultiIndex):
-            if 'Adj Close' in df.columns.get_level_values(0):
-                c = df['Adj Close']
-            elif 'Adj Close' in df.columns.get_level_values(1):
-                c = df.xs('Adj Close', level=1, axis=1)
-            else: continue
+    # ─── CRITICAL UPGRADE: Sequential fetching with randomized delays ───
+    for idx, sym in enumerate(all_tickers):
+        # Take a longer breather every 50 requests to clear rate limit windows
+        if idx > 0 and idx % 50 == 0:
+            print(f"Progress: {idx}/{len(all_tickers)}. Taking a 10-second cooldown...")
+            time.sleep(10)
             
-            if isinstance(c, pd.DataFrame):
-                for sym in c.columns: closes_dict[sym] = c[sym]
-            elif isinstance(c, pd.Series):
-                closes_dict[c.name] = c
-        else:
-            if 'Adj Close' in df.columns and len(chunk) == 1:
-                closes_dict[chunk[0]] = df['Adj Close']
+        try:
+            ticker = yf.Ticker(sym, session=yf_session)
+            # .history() automatically adjusts for splits & dividends by default!
+            df = ticker.history(period="10y") 
+            
+            if not df.empty and 'Close' in df.columns:
+                closes_dict[sym] = df['Close']
                 
-        # Increased sleep to let Yahoo breathe
-        time.sleep(2.5)
+        except Exception as e:
+            print(f"⚠️ Rate limit or fetch error on {sym}: {e}")
+            
+        # Random micro-sleep to mimic human clicking and evade bot detection
+        time.sleep(random.uniform(0.7, 1.6))
+    # ──────────────────────────────────────────────────────────────────
 
     closes = pd.DataFrame(closes_dict)
     
@@ -124,7 +117,7 @@ def generate_seasonality():
     results = []
     valid_cols = list(closes.columns)
     
-    print(f"Successfully downloaded {len(valid_cols)} symbols. Calculating seasonality...")
+    print(f"\nSuccessfully downloaded {len(valid_cols)} symbols. Calculating seasonality...")
     
     for react_sym in universe_symbols:
         yahoo_sym = YAHOO_MAP.get(react_sym, react_sym)
