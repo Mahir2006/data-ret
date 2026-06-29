@@ -6,6 +6,10 @@ on:
     - cron: '52 12 * * *'
   workflow_dispatch:
 
+# CRITICAL FIX 1: Explicitly grant write permissions so the bot can push to the repo
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -37,6 +41,9 @@ jobs:
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
-          git add market_data.json breadth_data.json earnings_data.json
+          
+          # CRITICAL FIX 2: Added seasonality_data.json to the tracking list
+          git add market_data.json breadth_data.json earnings_data.json seasonality_data.json
+          
           # Only commit and push if there are actual changes
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Automated daily market, breadth, and earnings data update" && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Automated daily market, breadth, earnings, and seasonality update" && git push)
