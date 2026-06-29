@@ -124,7 +124,9 @@ def generate_seasonality():
     closes = closes.ffill().dropna(how='all')
 
     monthly_data = closes.resample('ME').last()
-    monthly_returns = monthly_data.pct_change().dropna() * 100
+    
+    # FIXED LINE: Removed .dropna() so we don't wipe out the entire dataframe
+    monthly_returns = monthly_data.pct_change() * 100
 
     results = []
     valid_cols = list(closes.columns)
@@ -135,7 +137,9 @@ def generate_seasonality():
         yahoo_sym = YAHOO_MAP.get(react_sym, react_sym)
         if yahoo_sym not in valid_cols: continue
         
+        # Here is where missing values for individual stocks are properly dropped
         col_rets = monthly_returns[yahoo_sym].dropna()
+        
         # Require at least 5 years (60 months) of history
         if len(col_rets) < 60: 
             continue 
