@@ -29,6 +29,9 @@ jobs:
 
       - name: Run Earnings Data Engine
         run: python generate_earnings.py
+        
+      - name: Run Seasonality Data Engine
+        run: python generate_seasonality.py
 
       - name: Commit and Push JSON
         run: |
