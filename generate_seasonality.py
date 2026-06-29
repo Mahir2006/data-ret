@@ -6,9 +6,11 @@ import requests
 import io
 import datetime
 import calendar
+import random
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+# Edge-case mappings for Yahoo Finance ticker mismatches
 YAHOO_MAP = {
     "VARDHMAN.NS": "VTL.NS", "FIRSTSOURCE.NS": "FSL.NS", "GUJARATGAS.NS": "GUJGASLTD.NS", 
     "KALYAN.NS": "KALYANKJIL.NS", "TVSMOTORS.NS": "TVSMOTOR.NS", "FINOLEX.NS": "FINCABLES.NS", 
@@ -23,15 +25,15 @@ def get_live_nifty_500():
         "https://niftyindices.com/Indexconstituent/ind_nifty500list.csv",
         "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
     ]
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    }
+    
     session = requests.Session()
     retry_strategy = Retry(total=3, backoff_factor=2, status_forcelist=[403, 429, 500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retry_strategy)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
-    session.headers.update(headers)
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    })
     
     csv_payload = None
     for url in urls:
@@ -66,25 +68,32 @@ def generate_seasonality():
     yahoo_symbols_to_download = [YAHOO_MAP.get(sym, sym) for sym in universe_symbols]
     all_tickers = list(set(yahoo_symbols_to_download))
 
+    # --- CRITICAL FIX: Stealth Session for yfinance ---
+    yf_session = requests.Session()
+    yf_session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Connection': 'keep-alive',
+    })
+
     print(f"Downloading 10-year historical data for {len(all_tickers)} symbols...")
     closes_dict = {}
-    
-    # 20 stocks at a time is the sweet spot for evading Azure IP limits
     chunk_size = 20 
     
     for i in range(0, len(all_tickers), chunk_size):
         chunk = all_tickers[i:i + chunk_size]
+        print(f"Fetching chunk {i} to {i + chunk_size}...")
         
         try:
-            # auto_adjust=True gives us clean Adjusted Close prices natively
-            # threads=False prevents the parallel request burst that triggers the ban
-            df = yf.download(chunk, period="10y", interval="1d", auto_adjust=True, threads=False, progress=False)
+            # Passed the stealth session here so Yahoo doesn't block Azure IPs
+            df = yf.download(chunk, period="10y", interval="1d", auto_adjust=True, threads=False, progress=False, session=yf_session)
             
             if df.empty: 
-                time.sleep(3)
+                print(f"⚠️ Chunk {i} returned empty. Sleeping and continuing...")
+                time.sleep(5)
                 continue
             
-            # Since auto_adjust is True, 'Close' is automatically the Adjusted Close
             if isinstance(df.columns, pd.MultiIndex):
                 if 'Close' in df.columns.get_level_values(0):
                     c = df['Close']
@@ -103,8 +112,8 @@ def generate_seasonality():
         except Exception as e:
             print(f"⚠️ Error on chunk {i}: {e}")
             
-        # A solid 3-second pause between chunks keeps the bot under the radar
-        time.sleep(3)
+        # Randomized human-like sleep to evade bot detection
+        time.sleep(random.uniform(2.5, 4.5))
 
     closes = pd.DataFrame(closes_dict)
     
@@ -131,6 +140,7 @@ def generate_seasonality():
         if yahoo_sym not in valid_cols: continue
         
         col_rets = monthly_returns[yahoo_sym].dropna()
+        # Skip if less than 5 years of history to ensure data quality
         if len(col_rets) < 60: continue 
         
         df_months = pd.DataFrame({'Return': col_rets})
