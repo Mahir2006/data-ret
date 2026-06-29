@@ -6,11 +6,9 @@ import requests
 import io
 import datetime
 import calendar
-import random
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# Edge-case mappings for Yahoo Finance ticker mismatches
 YAHOO_MAP = {
     "VARDHMAN.NS": "VTL.NS", "FIRSTSOURCE.NS": "FSL.NS", "GUJARATGAS.NS": "GUJGASLTD.NS", 
     "KALYAN.NS": "KALYANKJIL.NS", "TVSMOTORS.NS": "TVSMOTOR.NS", "FINOLEX.NS": "FINCABLES.NS", 
@@ -68,41 +66,50 @@ def generate_seasonality():
     yahoo_symbols_to_download = [YAHOO_MAP.get(sym, sym) for sym in universe_symbols]
     all_tickers = list(set(yahoo_symbols_to_download))
 
-    # Create a stealth session for yfinance
-    yf_session = requests.Session()
-    yf_session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    })
-
-    print(f"Downloading 10-year historical data for {len(all_tickers)} symbols sequentially...")
+    print(f"Downloading 10-year historical data for {len(all_tickers)} symbols...")
     closes_dict = {}
     
-    # ─── CRITICAL UPGRADE: Sequential fetching with randomized delays ───
-    for idx, sym in enumerate(all_tickers):
-        # Take a longer breather every 50 requests to clear rate limit windows
-        if idx > 0 and idx % 50 == 0:
-            print(f"Progress: {idx}/{len(all_tickers)}. Taking a 10-second cooldown...")
-            time.sleep(10)
-            
+    # 20 stocks at a time is the sweet spot for evading Azure IP limits
+    chunk_size = 20 
+    
+    for i in range(0, len(all_tickers), chunk_size):
+        chunk = all_tickers[i:i + chunk_size]
+        
         try:
-            ticker = yf.Ticker(sym, session=yf_session)
-            # .history() automatically adjusts for splits & dividends by default!
-            df = ticker.history(period="10y") 
+            # auto_adjust=True gives us clean Adjusted Close prices natively
+            # threads=False prevents the parallel request burst that triggers the ban
+            df = yf.download(chunk, period="10y", interval="1d", auto_adjust=True, threads=False, progress=False)
             
-            if not df.empty and 'Close' in df.columns:
-                closes_dict[sym] = df['Close']
+            if df.empty: 
+                time.sleep(3)
+                continue
+            
+            # Since auto_adjust is True, 'Close' is automatically the Adjusted Close
+            if isinstance(df.columns, pd.MultiIndex):
+                if 'Close' in df.columns.get_level_values(0):
+                    c = df['Close']
+                elif 'Close' in df.columns.get_level_values(1):
+                    c = df.xs('Close', level=1, axis=1)
+                else: continue
                 
+                if isinstance(c, pd.DataFrame):
+                    for sym in c.columns: closes_dict[sym] = c[sym]
+                elif isinstance(c, pd.Series):
+                    closes_dict[c.name] = c
+            else:
+                if 'Close' in df.columns and len(chunk) == 1:
+                    closes_dict[chunk[0]] = df['Close']
+                    
         except Exception as e:
-            print(f"⚠️ Rate limit or fetch error on {sym}: {e}")
+            print(f"⚠️ Error on chunk {i}: {e}")
             
-        # Random micro-sleep to mimic human clicking and evade bot detection
-        time.sleep(random.uniform(0.7, 1.6))
-    # ──────────────────────────────────────────────────────────────────
+        # A solid 3-second pause between chunks keeps the bot under the radar
+        time.sleep(3)
 
     closes = pd.DataFrame(closes_dict)
     
     if closes.empty:
-        print("❌ FATAL: No data was successfully downloaded from Yahoo Finance. Exiting.")
+        print("❌ FATAL: No data was successfully downloaded. Exiting.")
         return
 
     if hasattr(closes.index, 'tz') and closes.index.tz is not None:
@@ -117,7 +124,7 @@ def generate_seasonality():
     results = []
     valid_cols = list(closes.columns)
     
-    print(f"\nSuccessfully downloaded {len(valid_cols)} symbols. Calculating seasonality...")
+    print(f"Successfully downloaded {len(valid_cols)} symbols. Calculating seasonality...")
     
     for react_sym in universe_symbols:
         yahoo_sym = YAHOO_MAP.get(react_sym, react_sym)
@@ -125,19 +132,6 @@ def generate_seasonality():
         
         col_rets = monthly_returns[yahoo_sym].dropna()
         if len(col_rets) < 60: continue 
-        
-        try:
-            mcap = yf.Ticker(yahoo_sym, session=yf_session).fast_info.get('market_cap', 0)
-        except Exception:
-            try:
-                mcap = yf.Ticker(yahoo_sym, session=yf_session).info.get('marketCap', 0)
-            except Exception:
-                mcap = 0
-                
-        if mcap < 8000000000:
-            continue
-            
-        mcap_cr = round(mcap / 10000000) 
         
         df_months = pd.DataFrame({'Return': col_rets})
         df_months['Month'] = df_months.index.month
@@ -154,7 +148,6 @@ def generate_seasonality():
             "symbol": react_sym.replace(".NS", ""),
             "name": meta["name"],
             "sector": meta["sector"],
-            "marketCapCr": mcap_cr,
             "months": {
                 k: {
                     "winRate": round(v['winRate'], 1), 
