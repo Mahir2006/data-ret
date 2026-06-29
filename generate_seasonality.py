@@ -77,11 +77,12 @@ def generate_seasonality():
         
         if df.empty: continue
         
+        # UPGRADE 1: Pull 'Adj Close' to account for stock splits and dividends
         if isinstance(df.columns, pd.MultiIndex):
-            if 'Close' in df.columns.get_level_values(0):
-                c = df['Close']
-            elif 'Close' in df.columns.get_level_values(1):
-                c = df.xs('Close', level=1, axis=1)
+            if 'Adj Close' in df.columns.get_level_values(0):
+                c = df['Adj Close']
+            elif 'Adj Close' in df.columns.get_level_values(1):
+                c = df.xs('Adj Close', level=1, axis=1)
             else: continue
             
             if isinstance(c, pd.DataFrame):
@@ -89,8 +90,8 @@ def generate_seasonality():
             elif isinstance(c, pd.Series):
                 closes_dict[c.name] = c
         else:
-            if 'Close' in df.columns and len(chunk) == 1:
-                closes_dict[chunk[0]] = df['Close']
+            if 'Adj Close' in df.columns and len(chunk) == 1:
+                closes_dict[chunk[0]] = df['Adj Close']
         time.sleep(1)
 
     closes = pd.DataFrame(closes_dict)
@@ -105,6 +106,8 @@ def generate_seasonality():
     results = []
     valid_cols = list(closes.columns)
     
+    print("Calculating seasonality and fetching market caps...")
+    
     for react_sym in universe_symbols:
         yahoo_sym = YAHOO_MAP.get(react_sym, react_sym)
         if yahoo_sym not in valid_cols: continue
@@ -112,9 +115,25 @@ def generate_seasonality():
         col_rets = monthly_returns[yahoo_sym].dropna()
         if len(col_rets) < 60: continue # Skip if less than 5 years of history
         
+        # UPGRADE 2: Fetch Market Cap and filter > 800 Cr
+        try:
+            mcap = yf.Ticker(yahoo_sym).fast_info.get('market_cap', 0)
+        except Exception:
+            try:
+                mcap = yf.Ticker(yahoo_sym).info.get('marketCap', 0)
+            except Exception:
+                mcap = 0
+                
+        # 800 Cr = 8,000,000,000
+        if mcap < 8000000000:
+            continue
+            
+        mcap_cr = round(mcap / 10000000) 
+        
         df_months = pd.DataFrame({'Return': col_rets})
         df_months['Month'] = df_months.index.month
         
+        # Calculate exactly what was requested: avg return and win rate
         seasonality = df_months.groupby('Month').agg(
             avgReturn=('Return', 'mean'),
             winRate=('Return', lambda x: (x > 0).mean() * 100)
@@ -127,7 +146,13 @@ def generate_seasonality():
             "symbol": react_sym.replace(".NS", ""),
             "name": meta["name"],
             "sector": meta["sector"],
-            "months": {k: {"winRate": round(v['winRate'], 1), "avgReturn": round(v['avgReturn'], 2)} for k, v in seasonality.to_dict('index').items()}
+            "marketCapCr": mcap_cr,
+            "months": {
+                k: {
+                    "winRate": round(v['winRate'], 1), 
+                    "avgReturn": round(v['avgReturn'], 2)
+                } for k, v in seasonality.to_dict('index').items()
+            }
         })
 
     output = {
