@@ -77,7 +77,6 @@ def generate_seasonality():
         
         if df.empty: continue
         
-        # UPGRADE 1: Pull 'Adj Close' to account for stock splits and dividends
         if isinstance(df.columns, pd.MultiIndex):
             if 'Adj Close' in df.columns.get_level_values(0):
                 c = df['Adj Close']
@@ -95,8 +94,20 @@ def generate_seasonality():
         time.sleep(1)
 
     closes = pd.DataFrame(closes_dict)
-    if closes.index.tz is not None:
+    
+    # --- CRITICAL FIX APPLIED HERE ---
+    if closes.empty:
+        print("⚠️ No data was successfully downloaded. Exiting.")
+        return
+
+    # Use hasattr to safely check for timezones without crashing on a RangeIndex
+    if hasattr(closes.index, 'tz') and closes.index.tz is not None:
         closes.index = closes.index.tz_localize(None)
+        
+    # Force the index to be proper Datetime objects just in case
+    closes.index = pd.to_datetime(closes.index)
+    # ---------------------------------
+
     closes = closes.ffill().dropna(how='all')
 
     # Calculate Seasonality
@@ -115,7 +126,6 @@ def generate_seasonality():
         col_rets = monthly_returns[yahoo_sym].dropna()
         if len(col_rets) < 60: continue # Skip if less than 5 years of history
         
-        # UPGRADE 2: Fetch Market Cap and filter > 800 Cr
         try:
             mcap = yf.Ticker(yahoo_sym).fast_info.get('market_cap', 0)
         except Exception:
@@ -133,7 +143,6 @@ def generate_seasonality():
         df_months = pd.DataFrame({'Return': col_rets})
         df_months['Month'] = df_months.index.month
         
-        # Calculate exactly what was requested: avg return and win rate
         seasonality = df_months.groupby('Month').agg(
             avgReturn=('Return', 'mean'),
             winRate=('Return', lambda x: (x > 0).mean() * 100)
