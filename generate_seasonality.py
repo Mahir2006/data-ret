@@ -67,15 +67,26 @@ def generate_seasonality():
     yahoo_symbols_to_download = [YAHOO_MAP.get(sym, sym) for sym in universe_symbols]
     all_tickers = list(set(yahoo_symbols_to_download))
 
-    print(f"Downloading 10-year historical data for {len(all_tickers)} symbols...")
+    # Create a stealth session for yfinance
+    yf_session = requests.Session()
+    yf_session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    })
+
+    print(f"Downloading 10-year historical data for {len(all_tickers)} symbols in stealth mode...")
     closes_dict = {}
-    chunk_size = 50
+    
+    # Reduced chunk size to 20 to avoid Yahoo rate limits
+    chunk_size = 20 
     
     for i in range(0, len(all_tickers), chunk_size):
         chunk = all_tickers[i:i + chunk_size]
-        df = yf.download(chunk, period="10y", interval="1d", progress=False, threads=False)
+        # Pass the stealth session to yfinance
+        df = yf.download(chunk, period="10y", interval="1d", progress=False, threads=False, session=yf_session)
         
-        if df.empty: continue
+        if df.empty: 
+            print(f"⚠️ Chunk {i} to {i+chunk_size} returned empty.")
+            continue
         
         if isinstance(df.columns, pd.MultiIndex):
             if 'Adj Close' in df.columns.get_level_values(0):
@@ -91,50 +102,45 @@ def generate_seasonality():
         else:
             if 'Adj Close' in df.columns and len(chunk) == 1:
                 closes_dict[chunk[0]] = df['Adj Close']
-        time.sleep(1)
+                
+        # Increased sleep to let Yahoo breathe
+        time.sleep(2.5)
 
     closes = pd.DataFrame(closes_dict)
     
-    # --- CRITICAL FIX APPLIED HERE ---
     if closes.empty:
-        print("⚠️ No data was successfully downloaded. Exiting.")
+        print("❌ FATAL: No data was successfully downloaded from Yahoo Finance. Exiting.")
         return
 
-    # Use hasattr to safely check for timezones without crashing on a RangeIndex
     if hasattr(closes.index, 'tz') and closes.index.tz is not None:
         closes.index = closes.index.tz_localize(None)
         
-    # Force the index to be proper Datetime objects just in case
     closes.index = pd.to_datetime(closes.index)
-    # ---------------------------------
-
     closes = closes.ffill().dropna(how='all')
 
-    # Calculate Seasonality
     monthly_data = closes.resample('ME').last()
     monthly_returns = monthly_data.pct_change().dropna() * 100
 
     results = []
     valid_cols = list(closes.columns)
     
-    print("Calculating seasonality and fetching market caps...")
+    print(f"Successfully downloaded {len(valid_cols)} symbols. Calculating seasonality...")
     
     for react_sym in universe_symbols:
         yahoo_sym = YAHOO_MAP.get(react_sym, react_sym)
         if yahoo_sym not in valid_cols: continue
         
         col_rets = monthly_returns[yahoo_sym].dropna()
-        if len(col_rets) < 60: continue # Skip if less than 5 years of history
+        if len(col_rets) < 60: continue 
         
         try:
-            mcap = yf.Ticker(yahoo_sym).fast_info.get('market_cap', 0)
+            mcap = yf.Ticker(yahoo_sym, session=yf_session).fast_info.get('market_cap', 0)
         except Exception:
             try:
-                mcap = yf.Ticker(yahoo_sym).info.get('marketCap', 0)
+                mcap = yf.Ticker(yahoo_sym, session=yf_session).info.get('marketCap', 0)
             except Exception:
                 mcap = 0
                 
-        # 800 Cr = 8,000,000,000
         if mcap < 8000000000:
             continue
             
