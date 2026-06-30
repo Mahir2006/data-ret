@@ -125,25 +125,35 @@ def generate_seasonality():
 
     monthly_data = closes.resample('ME').last()
     
-    # FIXED LINE: Removed .dropna() so we don't wipe out the entire dataframe
+    # 1-Month and 3-Month Rolling Returns Calculation
     monthly_returns = monthly_data.pct_change() * 100
+    rolling_3m_returns = monthly_data.pct_change(periods=3) * 100
 
     results = []
     valid_cols = list(closes.columns)
     
-    track(f"Calculating seasonality metrics for {len(valid_cols)} symbols...")
+    # Labels map for 3-month periods (Key is the END month index)
+    labels_3m = {
+        1: "Nov-Jan", 2: "Dec-Feb", 3: "Jan-Mar", 4: "Feb-Apr",
+        5: "Mar-May", 6: "Apr-Jun", 7: "May-Jul", 8: "Jun-Aug",
+        9: "Jul-Sep", 10: "Aug-Oct", 11: "Sep-Nov", 12: "Oct-Dec"
+    }
+
+    track(f"Calculating 1M and 3M seasonality metrics for {len(valid_cols)} symbols...")
     
     for react_sym in universe_symbols:
         yahoo_sym = YAHOO_MAP.get(react_sym, react_sym)
         if yahoo_sym not in valid_cols: continue
         
-        # Here is where missing values for individual stocks are properly dropped
+        # Extract both 1-month and 3-month returns for the specific stock
         col_rets = monthly_returns[yahoo_sym].dropna()
+        col_rets_3m = rolling_3m_returns[yahoo_sym].dropna()
         
-        # Require at least 5 years (60 months) of history
-        if len(col_rets) < 60: 
+        # Require at least 5 years (60 months) of history for both metrics
+        if len(col_rets) < 60 or len(col_rets_3m) < 60: 
             continue 
         
+        # --- Calculate 1-Month Seasonality ---
         df_months = pd.DataFrame({'Return': col_rets})
         df_months['Month'] = df_months.index.month
         
@@ -152,6 +162,16 @@ def generate_seasonality():
             winRate=('Return', lambda x: (x > 0).mean() * 100)
         )
         seasonality.index = [calendar.month_abbr[i] for i in seasonality.index]
+        
+        # --- Calculate 3-Month Seasonality ---
+        df_3m = pd.DataFrame({'Return': col_rets_3m})
+        df_3m['Month'] = df_3m.index.month
+        
+        seasonality_3m = df_3m.groupby('Month').agg(
+            avgReturn=('Return', 'mean'),
+            winRate=('Return', lambda x: (x > 0).mean() * 100)
+        )
+        seasonality_3m.index = [labels_3m[i] for i in seasonality_3m.index]
         
         meta = metadata.get(react_sym, {"name": react_sym, "sector": "Uncategorized"})
         
@@ -164,6 +184,12 @@ def generate_seasonality():
                     "winRate": round(v['winRate'], 1), 
                     "avgReturn": round(v['avgReturn'], 2)
                 } for k, v in seasonality.to_dict('index').items()
+            },
+            "threeMonths": {
+                k: {
+                    "winRate": round(v['winRate'], 1), 
+                    "avgReturn": round(v['avgReturn'], 2)
+                } for k, v in seasonality_3m.to_dict('index').items()
             }
         })
 
@@ -174,7 +200,7 @@ def generate_seasonality():
 
     with open("seasonality_data.json", "w") as outfile:
         json.dump(output, outfile)
-    track("🎉 DONE! Seasonality JSON generated successfully.")
+    track("🎉 DONE! 1M & 3M Seasonality JSON generated successfully.")
 
 if __name__ == "__main__":
     generate_seasonality()
