@@ -18,6 +18,23 @@ YAHOO_MAP = {
 def track(msg):
     print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
+def calculate_rsi(series, period=14):
+    """Calculates standard Relative Strength Index (RSI)."""
+    if series.empty:
+        return pd.Series(dtype=float)
+    
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    
+    # Standard Wilder's Smoothing
+    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
+    
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
 def get_live_nifty_500():
     track("Fetching live Nifty 500 constituents and metadata from NSE...")
     urls = [
@@ -125,13 +142,13 @@ def generate_seasonality():
         9: "Jul-Sep", 10: "Aug-Oct", 11: "Sep-Nov", 12: "Oct-Dec"
     }
 
-    track("Processing metrics and flagging volume breakouts...")
+    track("Processing metrics, volume breakouts, and RSI...")
     for react_sym in universe_symbols:
         yahoo_sym = YAHOO_MAP.get(react_sym, react_sym)
         if yahoo_sym not in closes.columns: continue
         
-        # --- Volume Breakout Logic (Flagging only, no filtering here) ---
-        vol_series = volumes[yahoo_sym].dropna() if yahoo_sym in volumes.columns else pd.Series()
+        # --- Volume Breakout Logic ---
+        vol_series = volumes[yahoo_sym].dropna() if yahoo_sym in volumes.columns else pd.Series(dtype=float)
         volume_breakout = False
         
         if len(vol_series) >= 4:
@@ -139,6 +156,21 @@ def generate_seasonality():
             last_3_days_avg = float(vol_series.iloc[-4:-1].mean())
             if last_3_days_avg > 0 and today_volume > last_3_days_avg:
                 volume_breakout = True
+
+        # --- NEW: Weekly & Monthly RSI Logic (50 to 55) ---
+        weekly_closes = closes[yahoo_sym].resample('W-FRI').last().dropna()
+        monthly_closes = closes[yahoo_sym].resample('ME').last().dropna()
+
+        weekly_rsi = calculate_rsi(weekly_closes)
+        monthly_rsi = calculate_rsi(monthly_closes)
+
+        # Get the most recent RSI value, default to 0 if there's not enough data
+        w_rsi_val = float(weekly_rsi.iloc[-1]) if len(weekly_rsi) >= 14 else 0
+        m_rsi_val = float(monthly_rsi.iloc[-1]) if len(monthly_rsi) >= 14 else 0
+
+        # Create flags
+        weekly_rsi_in_range = 50 < w_rsi_val < 55
+        monthly_rsi_in_range = 50 < m_rsi_val < 55
 
         col_rets = monthly_returns[yahoo_sym].dropna()
         col_rets_3m = rolling_3m_returns[yahoo_sym].dropna()
@@ -166,7 +198,9 @@ def generate_seasonality():
             "symbol": react_sym.replace(".NS", ""),
             "name": meta["name"],
             "sector": meta["sector"],
-            "volumeBreakout": volume_breakout,  # Attach the flag!
+            "volumeBreakout": volume_breakout,
+            "weeklyRsiInRange": weekly_rsi_in_range,
+            "monthlyRsiInRange": monthly_rsi_in_range,
             "months": {
                 k: {"winRate": round(v['winRate'], 1), "avgReturn": round(v['avgReturn'], 2)} 
                 for k, v in seasonality.to_dict('index').items()
