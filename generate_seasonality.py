@@ -125,22 +125,20 @@ def generate_seasonality():
         9: "Jul-Sep", 10: "Aug-Oct", 11: "Sep-Nov", 12: "Oct-Dec"
     }
 
-    track("Processing metrics and strictly filtering for volume breakouts...")
+    track("Processing metrics and flagging volume breakouts...")
     for react_sym in universe_symbols:
         yahoo_sym = YAHOO_MAP.get(react_sym, react_sym)
         if yahoo_sym not in closes.columns: continue
         
-        # --- Strict Volume Breakout Filter ---
+        # --- Volume Breakout Logic (Flagging only, no filtering here) ---
         vol_series = volumes[yahoo_sym].dropna() if yahoo_sym in volumes.columns else pd.Series()
-        if len(vol_series) < 4: 
-            continue
-            
-        today_volume = float(vol_series.iloc[-1])
-        last_3_days_avg = float(vol_series.iloc[-4:-1].mean())
+        volume_breakout = False
         
-        # If it doesn't meet the volume condition, skip it entirely
-        if not (last_3_days_avg > 0 and today_volume > last_3_days_avg):
-            continue
+        if len(vol_series) >= 4:
+            today_volume = float(vol_series.iloc[-1])
+            last_3_days_avg = float(vol_series.iloc[-4:-1].mean())
+            if last_3_days_avg > 0 and today_volume > last_3_days_avg:
+                volume_breakout = True
 
         col_rets = monthly_returns[yahoo_sym].dropna()
         col_rets_3m = rolling_3m_returns[yahoo_sym].dropna()
@@ -168,6 +166,7 @@ def generate_seasonality():
             "symbol": react_sym.replace(".NS", ""),
             "name": meta["name"],
             "sector": meta["sector"],
+            "volumeBreakout": volume_breakout,  # Attach the flag!
             "months": {
                 k: {"winRate": round(v['winRate'], 1), "avgReturn": round(v['avgReturn'], 2)} 
                 for k, v in seasonality.to_dict('index').items()
@@ -185,7 +184,7 @@ def generate_seasonality():
 
     with open("seasonality_data.json", "w") as outfile:
         json.dump(output, outfile)
-    track("🎉 DONE! Strict Seasonality + Volume JSON generated successfully.")
+    track("🎉 DONE! JSON generated successfully.")
 
 if __name__ == "__main__":
     generate_seasonality()
