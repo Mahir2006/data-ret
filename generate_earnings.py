@@ -74,24 +74,25 @@ def build_dynamic_hierarchy():
         
     return hierarchy
 
-# ─── 3. DYNAMIC QUARTER CALCULATOR ─────────────────────────────────────────────
+# ─── 3. DYNAMIC QUARTER CALCULATOR (FIXED) ─────────────────────────────────────
 def get_dynamic_quarters():
-    now = datetime.datetime.now()
+    # FIX: Subtract 45 days to account for the actual corporate earnings reporting lag
+    now = datetime.datetime.now() - datetime.timedelta(days=45)
     month = now.month
     year = now.year
     
     if 4 <= month <= 6:
-        curr_q, prev_q = f"Q1 FY{str(year+1)[2:]}", f"Q4 FY{str(year)[2:]}"
-        curr_per, prev_per = "Apr–Jun", "Jan–Mar"
-    elif 7 <= month <= 9:
-        curr_q, prev_q = f"Q2 FY{str(year+1)[2:]}", f"Q1 FY{str(year+1)[2:]}"
-        curr_per, prev_per = "Jul–Sep", "Apr–Jun"
-    elif 10 <= month <= 12:
-        curr_q, prev_q = f"Q3 FY{str(year+1)[2:]}", f"Q2 FY{str(year+1)[2:]}"
-        curr_per, prev_per = "Oct–Dec", "Jul–Sep"
-    else: # Jan to Mar
         curr_q, prev_q = f"Q4 FY{str(year)[2:]}", f"Q3 FY{str(year)[2:]}"
         curr_per, prev_per = "Jan–Mar", "Oct–Dec"
+    elif 7 <= month <= 9:
+        curr_q, prev_q = f"Q1 FY{str(year+1)[2:]}", f"Q4 FY{str(year)[2:]}"
+        curr_per, prev_per = "Apr–Jun", "Jan–Mar"
+    elif 10 <= month <= 12:
+        curr_q, prev_q = f"Q2 FY{str(year+1)[2:]}", f"Q1 FY{str(year+1)[2:]}"
+        curr_per, prev_per = "Jul–Sep", "Apr–Jun"
+    else: # Jan to Mar
+        curr_q, prev_q = f"Q3 FY{str(year)[2:]}", f"Q2 FY{str(year)[2:]}"
+        curr_per, prev_per = "Oct–Dec", "Jul–Sep"
         
     return {
         "prev": prev_q,
@@ -111,7 +112,7 @@ def get_yf_sym(sym):
     }
     return fixes.get(sym, sym)
 
-# ─── 4. AUTHENTIC DATA EXTRACTION ──────────────────────────────────────────────
+# ─── 4. AUTHENTIC DATA EXTRACTION (FIXED) ──────────────────────────────────────
 def fetch_stock_data(symbol):
     yf_sym = get_yf_sym(symbol)
     ticker = yf.Ticker(yf_sym)
@@ -120,15 +121,13 @@ def fetch_stock_data(symbol):
     time.sleep(0.5)
     
     try:
-        # Fetch actual fundamental accounting data
         q_income = ticker.quarterly_income_stmt
         info = ticker.info
         
-        # Guard clause: Check if fundamental data is missing or incomplete
+        # Guard clause
         if q_income is None or q_income.empty or len(q_income.columns) < 2:
-            return {"pat_q4": 0, "pat_q3": 0, "rev_q4": 0, "rev_q3": 0, "ebitda_q4": 0, "npm": 10.0, "roe": 15.0}
+            return {"pat_q4": 0, "pat_q3": 0, "rev_q4": 0, "rev_q3": 0, "ebitda_q4": 0, "ebitda_q3": 0, "npm_q4": 0, "npm_q3": 0, "roe": 0}
 
-        # Helper function to extract specific accounting rows across different yfinance versions
         def get_row(df, possible_names):
             for name in possible_names:
                 if name in df.index:
@@ -137,16 +136,14 @@ def fetch_stock_data(symbol):
 
         net_income = get_row(q_income, ["NetIncome", "Net Income", "Net Income Common Stockholders"])
         revenue = get_row(q_income, ["TotalRevenue", "Total Revenue", "Operating Revenue"])
-        ebitda = get_row(q_income, ["EBITDA", "Ebitda", "Operating Income"]) # fallback to Operating Income if EBITDA missing
+        ebitda = get_row(q_income, ["EBITDA", "Ebitda", "Operating Income"])
 
-        # Helper function to safely calculate QoQ percentage growth
         def calc_growth(curr, prev):
             if prev == 0 or prev is None:
                 return 0
-            # Use abs(prev) to correctly calculate growth when moving from negative to positive earnings
             return ((curr - prev) / abs(prev)) * 100
 
-        # yfinance columns are ordered Most Recent -> Oldest (index 0 is current quarter, 1 is prev)
+        # Authentic QoQ Growth Math
         pat_q4_gr = calc_growth(net_income[0], net_income[1])
         pat_q3_gr = calc_growth(net_income[1], net_income[2] if len(net_income) > 2 else net_income[1])
 
@@ -154,9 +151,12 @@ def fetch_stock_data(symbol):
         rev_q3_gr = calc_growth(revenue[1], revenue[2] if len(revenue) > 2 else revenue[1])
 
         ebitda_q4_gr = calc_growth(ebitda[0], ebitda[1])
+        ebitda_q3_gr = calc_growth(ebitda[1], ebitda[2] if len(ebitda) > 2 else ebitda[1])
 
-        # Safely extract ratios
-        npm_raw = info.get('profitMargins')
+        # Authentic Historical Margin Math (Net Income / Revenue)
+        npm_q4 = (net_income[0] / revenue[0] * 100) if revenue[0] != 0 else 0
+        npm_q3 = (net_income[1] / revenue[1] * 100) if len(revenue) > 1 and revenue[1] != 0 else 0
+
         roe_raw = info.get('returnOnEquity')
 
         return {
@@ -165,14 +165,16 @@ def fetch_stock_data(symbol):
             "rev_q4": round(rev_q4_gr, 1),
             "rev_q3": round(rev_q3_gr, 1),
             "ebitda_q4": round(ebitda_q4_gr, 1),
-            "npm": round(npm_raw * 100, 1) if npm_raw is not None else 10.0,
-            "roe": round(roe_raw * 100, 1) if roe_raw is not None else 15.0
+            "ebitda_q3": round(ebitda_q3_gr, 1),
+            "npm_q4": round(npm_q4, 1),
+            "npm_q3": round(npm_q3, 1),
+            "roe": round(roe_raw * 100, 1) if roe_raw is not None else 0
         }
     except Exception as e:
         print(f"Error fetching {symbol}: {e}")
-        return {"pat_q4": 0, "pat_q3": 0, "rev_q4": 0, "rev_q3": 0, "ebitda_q4": 0, "npm": 10.0, "roe": 15.0}
+        return {"pat_q4": 0, "pat_q3": 0, "rev_q4": 0, "rev_q3": 0, "ebitda_q4": 0, "ebitda_q3": 0, "npm_q4": 0, "npm_q3": 0, "roe": 0}
 
-# ─── 5. JSON GENERATION ────────────────────────────────────────────────────────
+# ─── 5. JSON GENERATION (FIXED) ────────────────────────────────────────────────
 def generate_earnings():
     HIERARCHY = build_dynamic_hierarchy()
     
@@ -189,7 +191,9 @@ def generate_earnings():
         print(f"Processing Sector: {sec['name']}...")
         sec_inds = []
         sec_tot_stocks, sec_beat, sec_miss, sec_neu = 0, 0, 0, 0
-        s_q3_pat, s_q4_pat, s_q3_rev, s_q4_rev, s_q3_ebitda, s_q4_ebitda, s_npm, s_roe = [], [], [], [], [], [], [], []
+        
+        # Removed the fake lists, added proper tracking arrays
+        s_q3_pat, s_q4_pat, s_q3_rev, s_q4_rev, s_q3_ebitda, s_q4_ebitda, s_q3_npm, s_q4_npm, s_roe = [], [], [], [], [], [], [], [], []
         
         for ind in sec["industries"]:
             ind_subs = []
@@ -204,7 +208,6 @@ def generate_earnings():
                 for sym in sub["stocks"]:
                     data = fetch_stock_data(sym)
                     
-                    # Beat / Miss defined by > 2% QoQ PAT growth
                     if data["pat_q4"] > 2: sub_beat += 1
                     elif data["pat_q4"] < -2: sub_miss += 1
                     else: sub_neu += 1
@@ -214,8 +217,11 @@ def generate_earnings():
                     
                     s_q3_pat.append(data["pat_q3"]); s_q4_pat.append(data["pat_q4"])
                     s_q3_rev.append(data["rev_q3"]); s_q4_rev.append(data["rev_q4"])
-                    s_q3_ebitda.append(data["ebitda_q4"] * 0.9); s_q4_ebitda.append(data["ebitda_q4"])
-                    s_npm.append(data["npm"]); s_roe.append(data["roe"])
+                    
+                    # FIX: Injecting authentic historical metrics instead of multiplying by 0.9
+                    s_q3_ebitda.append(data["ebitda_q3"]); s_q4_ebitda.append(data["ebitda_q4"])
+                    s_q3_npm.append(data["npm_q3"]); s_q4_npm.append(data["npm_q4"])
+                    s_roe.append(data["roe"])
                     
                     i_q3_pat.append(data["pat_q3"]); i_q4_pat.append(data["pat_q4"])
                     i_q3_rev.append(data["rev_q3"]); i_q4_rev.append(data["rev_q4"])
@@ -261,9 +267,9 @@ def generate_earnings():
             "q4Rev": round(np.mean(s_q4_rev), 1) if s_q4_rev else 0,
             "q3Ebitda": round(np.mean(s_q3_ebitda), 1) if s_q3_ebitda else 0,
             "q4Ebitda": round(np.mean(s_q4_ebitda), 1) if s_q4_ebitda else 0,
-            "q3Npm": round(np.mean(s_npm) * 0.9, 1) if s_npm else 0,
-            "q4Npm": round(np.mean(s_npm), 1) if s_npm else 0,
-            "q3Roe": round(np.mean(s_roe) * 0.9, 1) if s_roe else 0,
+            "q3Npm": round(np.mean(s_q3_npm), 1) if s_q3_npm else 0,
+            "q4Npm": round(np.mean(s_q4_npm), 1) if s_q4_npm else 0,
+            "q3Roe": round(np.mean(s_roe), 1) if s_roe else 0,
             "q4Roe": round(np.mean(s_roe), 1) if s_roe else 0,
             "verdict": sec_verdict,
             "industries": sec_inds
@@ -272,7 +278,6 @@ def generate_earnings():
         global_tot += sec_tot_stocks; global_rpt += sec_tot_stocks
         global_beat += sec_beat; global_miss += sec_miss; global_neu += sec_neu
 
-    # Dynamic Quarters injected here
     quarter_info = get_dynamic_quarters()
 
     final_json = {
