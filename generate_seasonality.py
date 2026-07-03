@@ -108,8 +108,8 @@ def generate_seasonality():
                 time.sleep(3)
                 continue
             
-            # Using Adj Close to correctly handle stock splits and bonuses (like TECHM)
-            price_col = 'Adj Close' if 'Adj Close' in df.columns else 'Close'
+            # Locked to standard 'Close' to match TradingView's default split-adjusted (but dividend-unadjusted) charts
+            price_col = 'Close'
             
             if isinstance(df.columns, pd.MultiIndex):
                 if price_col in df.columns.get_level_values(0):
@@ -169,7 +169,6 @@ def generate_seasonality():
         if yahoo_sym not in closes.columns: continue
         
         # --- Volume Breakout Logic ---
-        # Filter out YF's zero-volume ghost rows
         if yahoo_sym in volumes.columns:
             vol_series = volumes[yahoo_sym].dropna()
             vol_series = vol_series[vol_series > 0]
@@ -178,7 +177,6 @@ def generate_seasonality():
             
         volume_breakout = False
         
-        # 3-period SMA (TradingView style, includes today)
         if len(vol_series) >= 3:
             today_volume = float(vol_series.iloc[-1])
             vol_sma_3 = float(vol_series.iloc[-3:].mean())
@@ -189,7 +187,6 @@ def generate_seasonality():
         weekly_closes = closes[yahoo_sym].resample('W-FRI').last().dropna()
         monthly_closes = closes[yahoo_sym].resample('ME').last().dropna()
 
-        # Calculates using exactly period=14 by default
         weekly_rsi = calculate_rsi(weekly_closes, period=14)
         monthly_rsi = calculate_rsi(monthly_closes, period=14)
 
@@ -222,13 +219,7 @@ def generate_seasonality():
         seasonality_3m.index = [labels_3m[i] for i in seasonality_3m.index]
         
         meta = metadata.get(react_sym, {"name": react_sym, "sector": "Uncategorized"})
-        # TEMPORARY DEBUG PRINT FOR TECH MAHINDRA
-        if yahoo_sym == "TECHM.NS":
-            print("\n--- DEBUG: TECHM.NS ---")
-            print("Last 3 Monthly Closes:\n", monthly_closes.tail(3))
-            print("Last 3 Monthly RSIs:\n", monthly_rsi.tail(3))
-            print("Last 5 Daily Volumes:\n", vol_series.tail(5))
-            print("-----------------------\n")
+        
         results.append({
             "symbol": react_sym.replace(".NS", ""),
             "name": meta["name"],
