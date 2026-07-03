@@ -103,7 +103,18 @@ def generate_seasonality():
         chunk = all_tickers[i:i + chunk_size]
         track(f"--> Fetching chunk {i} to {i + len(chunk)}...")
         try:
-            df = yf.download(chunk, start=start_date, end=end_date, interval="1d", threads=False, progress=False)
+            # -------------------------------------------------------------------------
+            # THE FIX: Added auto_adjust=False to lock it to unadjusted historical closes
+            # -------------------------------------------------------------------------
+            df = yf.download(
+                chunk, 
+                start=start_date, 
+                end=end_date, 
+                interval="1d", 
+                auto_adjust=False, 
+                threads=False, 
+                progress=False
+            )
             if df.empty: 
                 time.sleep(3)
                 continue
