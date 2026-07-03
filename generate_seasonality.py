@@ -30,11 +30,9 @@ def calculate_rsi(series, period=14):
     avg_gain = pd.Series(index=gain.index, dtype=float)
     avg_loss = pd.Series(index=loss.index, dtype=float)
 
-    # TradingView Step 1: Seed the very first value with an SMA of the first 14 periods
     avg_gain.iloc[period-1] = gain.iloc[:period].mean()
     avg_loss.iloc[period-1] = loss.iloc[:period].mean()
 
-    # TradingView Step 2: Apply Wilder's Smoothing for all subsequent periods
     for i in range(period, len(gain)):
         avg_gain.iloc[i] = (avg_gain.iloc[i-1] * (period - 1) + gain.iloc[i]) / period
         avg_loss.iloc[i] = (avg_loss.iloc[i-1] * (period - 1) + loss.iloc[i]) / period
@@ -42,22 +40,16 @@ def calculate_rsi(series, period=14):
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
     
-    # Realign index with the original series and fill initial NaN periods with 0
     rsi = pd.Series(index=series.index, data=rsi).fillna(0)
     return rsi
 
 def get_live_indices():
-    track("Fetching live constituents for Nifty 500, Midcap 150, and Microcap 250...")
+    track("Fetching live constituents for Nifty 500 and Microcap 250...")
     
-    # Fixed URLs and proper Index Names
     index_urls = {
         "Nifty 500": [
             "https://niftyindices.com/Indexconstituent/ind_nifty500list.csv",
             "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
-        ],
-        "Nifty Midcap 150": [
-            "https://niftyindices.com/Indexconstituent/ind_niftymidcap150list.csv",
-            "https://archives.nseindia.com/content/indices/ind_niftymidcap150list.csv"
         ],
         "Nifty Microcap 250": [
             "https://niftyindices.com/Indexconstituent/ind_niftymicrocap250_list.csv",
