@@ -46,44 +46,62 @@ def calculate_rsi(series, period=14):
     rsi = pd.Series(index=series.index, data=rsi).fillna(0)
     return rsi
 
-def get_live_nifty_500():
-    track("Fetching live Nifty 500 constituents and metadata from NSE...")
-    urls = [
-        "https://niftyindices.com/Indexconstituent/ind_nifty500list.csv",
-        "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
-    ]
+def get_live_indices():
+    track("Fetching live constituents for Nifty 500, Midcap 250, and Microcap 250...")
+    index_urls = {
+        "Nifty 500": [
+            "https://niftyindices.com/Indexconstituent/ind_nifty500list.csv",
+            "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+        ],
+        "Nifty Midcap 250": [
+            "https://niftyindices.com/Indexconstituent/ind_niftymidcap250list.csv",
+            "https://archives.nseindia.com/content/indices/ind_niftymidcap250list.csv"
+        ],
+        "Nifty Microcap 250": [
+            "https://niftyindices.com/Indexconstituent/ind_niftymicrocap250_list.csv",
+            "https://archives.nseindia.com/content/indices/ind_niftymicrocap250_list.csv"
+        ]
+    }
+    
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    csv_payload = None
-    
-    for url in urls:
-        try:
-            response = requests.get(url, headers=headers, timeout=15)
-            if response.status_code == 200 and "<html" not in response.text.lower()[:500]:
-                csv_payload = response.text
-                break
-        except requests.exceptions.RequestException:
-            continue
-            
-    if not csv_payload: 
-        track("❌ FATAL: Could not fetch Nifty 500 list.")
-        return [], {}
-
-    df = pd.read_csv(io.StringIO(csv_payload))
-    df.columns = df.columns.str.strip()
-    df = df[~df['Symbol'].str.contains("DUMMY", case=False, na=False)]
-    symbols = (df['Symbol'].astype(str) + ".NS").tolist()
-    
     metadata = {}
-    for _, row in df.iterrows():
-        sym = str(row['Symbol']).strip() + ".NS"
-        metadata[sym] = {
-            "name": str(row.get('Company Name', sym)).strip(),
-            "sector": str(row.get('Industry', 'Uncategorized')).strip()
-        }
-    return symbols, metadata
+    all_symbols = set()
+    
+    for index_name, urls in index_urls.items():
+        csv_payload = None
+        for url in urls:
+            try:
+                response = requests.get(url, headers=headers, timeout=15)
+                if response.status_code == 200 and "<html" not in response.text.lower()[:500]:
+                    csv_payload = response.text
+                    break
+            except requests.exceptions.RequestException:
+                continue
+                
+        if csv_payload:
+            df = pd.read_csv(io.StringIO(csv_payload))
+            df.columns = df.columns.str.strip()
+            df = df[~df['Symbol'].str.contains("DUMMY", case=False, na=False)]
+            
+            for _, row in df.iterrows():
+                sym = str(row['Symbol']).strip() + ".NS"
+                all_symbols.add(sym)
+                
+                if sym not in metadata:
+                    metadata[sym] = {
+                        "name": str(row.get('Company Name', sym)).strip(),
+                        "sector": str(row.get('Industry', 'Uncategorized')).strip(),
+                        "indices": []
+                    }
+                if index_name not in metadata[sym]["indices"]:
+                    metadata[sym]["indices"].append(index_name)
+        else:
+            track(f"⚠️ Warning: Could not fetch {index_name} list.")
+
+    return list(all_symbols), metadata
 
 def generate_seasonality():
-    universe_symbols, metadata = get_live_nifty_500()
+    universe_symbols, metadata = get_live_indices()
     if not universe_symbols: return
 
     all_tickers = list(set([YAHOO_MAP.get(sym, sym) for sym in universe_symbols]))
@@ -190,7 +208,6 @@ def generate_seasonality():
             today_volume = float(vol_series.iloc[-1])
             
             # iloc[-5:] gets the last 5 values (including today's volume)
-            # This perfectly mirrors TradingView's standard ta.sma(volume, 5) logic
             vol_sma_5 = float(vol_series.iloc[-5:].mean())
             
             if vol_sma_5 > 0 and today_volume > vol_sma_5:
@@ -231,12 +248,13 @@ def generate_seasonality():
         )
         seasonality_3m.index = [labels_3m[i] for i in seasonality_3m.index]
         
-        meta = metadata.get(react_sym, {"name": react_sym, "sector": "Uncategorized"})
+        meta = metadata.get(react_sym, {"name": react_sym, "sector": "Uncategorized", "indices": []})
         
         results.append({
             "symbol": react_sym.replace(".NS", ""),
             "name": meta["name"],
             "sector": meta["sector"],
+            "indices": meta.get("indices", []),
             "volumeBreakout": volume_breakout,
             "weeklyRsiInRange": weekly_rsi_in_range,
             "monthlyRsiInRange": monthly_rsi_in_range,
