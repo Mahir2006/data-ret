@@ -47,15 +47,17 @@ def calculate_rsi(series, period=14):
     return rsi
 
 def get_live_indices():
-    track("Fetching live constituents for Nifty 500, Midcap 250, and Microcap 250...")
+    track("Fetching live constituents for Nifty 500, Midcap 150, and Microcap 250...")
+    
+    # Fixed URLs and proper Index Names
     index_urls = {
         "Nifty 500": [
             "https://niftyindices.com/Indexconstituent/ind_nifty500list.csv",
             "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
         ],
-        "Nifty Midcap 250": [
-            "https://niftyindices.com/Indexconstituent/ind_niftymidcap250list.csv",
-            "https://archives.nseindia.com/content/indices/ind_niftymidcap250list.csv"
+        "Nifty Midcap 150": [
+            "https://niftyindices.com/Indexconstituent/ind_niftymidcap150list.csv",
+            "https://archives.nseindia.com/content/indices/ind_niftymidcap150list.csv"
         ],
         "Nifty Microcap 250": [
             "https://niftyindices.com/Indexconstituent/ind_niftymicrocap250_list.csv",
@@ -106,13 +108,10 @@ def generate_seasonality():
 
     all_tickers = list(set([YAHOO_MAP.get(sym, sym) for sym in universe_symbols]))
     
-    # +1 Day to ensure we catch EOD data completely
     end_date = datetime.datetime.today() + datetime.timedelta(days=1)
-    
-    # Pull 20 years to ensure RSI has enough historical warm-up
     start_date = end_date - datetime.timedelta(days=365 * 20)
 
-    track(f"Downloading historical data for {len(all_tickers)} symbols...")
+    track(f"Downloading historical data for {len(all_tickers)} unique symbols...")
     closes_dict = {}
     volumes_dict = {}
     chunk_size = 20 
@@ -121,7 +120,6 @@ def generate_seasonality():
         chunk = all_tickers[i:i + chunk_size]
         track(f"--> Fetching chunk {i} to {i + len(chunk)}...")
         try:
-            # Fixed with auto_adjust=False to maintain chart alignment
             df = yf.download(
                 chunk, 
                 start=start_date, 
@@ -169,7 +167,6 @@ def generate_seasonality():
         track("❌ FATAL: No data was downloaded.")
         return
 
-    # TZ cleanup
     if hasattr(closes.index, 'tz') and closes.index.tz is not None:
         closes.index = closes.index.tz_localize(None)
     closes.index = pd.to_datetime(closes.index).normalize()
@@ -194,7 +191,6 @@ def generate_seasonality():
         yahoo_sym = YAHOO_MAP.get(react_sym, react_sym)
         if yahoo_sym not in closes.columns: continue
         
-        # --- Volume Breakout Logic (TradingView Style) ---
         if yahoo_sym in volumes.columns:
             vol_series = volumes[yahoo_sym].dropna()
             vol_series = vol_series[vol_series > 0]
@@ -202,18 +198,12 @@ def generate_seasonality():
             vol_series = pd.Series(dtype=float)
             
         volume_breakout = False
-        
-        # We need at least 5 days of history to compute a 5-period SMA
         if len(vol_series) >= 5:
             today_volume = float(vol_series.iloc[-1])
-            
-            # iloc[-5:] gets the last 5 values (including today's volume)
             vol_sma_5 = float(vol_series.iloc[-5:].mean())
-            
             if vol_sma_5 > 0 and today_volume > vol_sma_5:
                 volume_breakout = True
 
-        # --- Weekly & Monthly RSI Logic ---
         weekly_closes = closes[yahoo_sym].resample('W-FRI').last().dropna()
         monthly_closes = closes[yahoo_sym].resample('ME').last().dropna()
 
@@ -226,13 +216,11 @@ def generate_seasonality():
         weekly_rsi_in_range = 50 < w_rsi_val < 55
         monthly_rsi_in_range = 50 < m_rsi_val < 55
 
-        # Slice seasonality returns back down to exactly 10 years (120 months)
         col_rets = monthly_returns[yahoo_sym].dropna().tail(120)
         col_rets_3m = rolling_3m_returns[yahoo_sym].dropna().tail(120)
         
         if len(col_rets) < 60 or len(col_rets_3m) < 60: continue 
         
-        # --- 1-Month Seasonality ---
         df_months = pd.DataFrame({'Return': col_rets})
         df_months['Month'] = df_months.index.month
         seasonality = df_months.groupby('Month').agg(
@@ -240,7 +228,6 @@ def generate_seasonality():
         )
         seasonality.index = [calendar.month_abbr[i] for i in seasonality.index]
         
-        # --- 3-Month Seasonality ---
         df_3m = pd.DataFrame({'Return': col_rets_3m})
         df_3m['Month'] = df_3m.index.month
         seasonality_3m = df_3m.groupby('Month').agg(
