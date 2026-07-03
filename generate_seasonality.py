@@ -76,8 +76,12 @@ def generate_seasonality():
     if not universe_symbols: return
 
     all_tickers = list(set([YAHOO_MAP.get(sym, sym) for sym in universe_symbols]))
-    end_date = datetime.datetime.today()
-    start_date = end_date - datetime.timedelta(days=365 * 10)
+    
+    # FIX: Add 1 day to end_date so it includes the current trading day
+    end_date = datetime.datetime.today() + datetime.timedelta(days=1)
+    
+    # FIX: Pull 20 years to ensure RSI has enough historical warm-up to match TradingView
+    start_date = end_date - datetime.timedelta(days=365 * 20)
 
     track(f"Downloading historical data for {len(all_tickers)} symbols...")
     closes_dict = {}
@@ -93,7 +97,8 @@ def generate_seasonality():
                 time.sleep(3)
                 continue
             
-            price_col = 'Adj Close' if 'Adj Close' in df.columns else 'Close'
+            # FIX: Force standard 'Close' instead of 'Adj Close' to avoid dividend distortion
+            price_col = 'Close'
             
             if isinstance(df.columns, pd.MultiIndex):
                 if price_col in df.columns.get_level_values(0):
@@ -127,9 +132,14 @@ def generate_seasonality():
         track("❌ FATAL: No data was downloaded.")
         return
 
+    # TZ cleanup for both dataframes in case of mixed YF formats
     if hasattr(closes.index, 'tz') and closes.index.tz is not None:
         closes.index = closes.index.tz_localize(None)
     closes.index = pd.to_datetime(closes.index).normalize()
+    
+    if hasattr(volumes.index, 'tz') and volumes.index.tz is not None:
+        volumes.index = volumes.index.tz_localize(None)
+    volumes.index = pd.to_datetime(volumes.index).normalize()
 
     monthly_data = closes.resample('ME').last()
     monthly_returns = monthly_data.pct_change() * 100
@@ -148,32 +158,39 @@ def generate_seasonality():
         if yahoo_sym not in closes.columns: continue
         
         # --- Volume Breakout Logic ---
-        vol_series = volumes[yahoo_sym].dropna() if yahoo_sym in volumes.columns else pd.Series(dtype=float)
+        # FIX: Filter out YF's zero-volume rows before evaluating
+        if yahoo_sym in volumes.columns:
+            vol_series = volumes[yahoo_sym].dropna()
+            vol_series = vol_series[vol_series > 0]
+        else:
+            vol_series = pd.Series(dtype=float)
+            
         volume_breakout = False
         
-        if len(vol_series) >= 4:
+        # FIX: Align with TradingView 3-period SMA (which includes today)
+        if len(vol_series) >= 3:
             today_volume = float(vol_series.iloc[-1])
-            last_3_days_avg = float(vol_series.iloc[-4:-1].mean())
-            if last_3_days_avg > 0 and today_volume > last_3_days_avg:
+            vol_sma_3 = float(vol_series.iloc[-3:].mean())
+            if vol_sma_3 > 0 and today_volume > vol_sma_3:
                 volume_breakout = True
 
-        # --- NEW: Weekly & Monthly RSI Logic (50 to 55) ---
+        # --- Weekly & Monthly RSI Logic ---
         weekly_closes = closes[yahoo_sym].resample('W-FRI').last().dropna()
         monthly_closes = closes[yahoo_sym].resample('ME').last().dropna()
 
         weekly_rsi = calculate_rsi(weekly_closes)
         monthly_rsi = calculate_rsi(monthly_closes)
 
-        # Get the most recent RSI value, default to 0 if there's not enough data
         w_rsi_val = float(weekly_rsi.iloc[-1]) if len(weekly_rsi) >= 14 else 0
         m_rsi_val = float(monthly_rsi.iloc[-1]) if len(monthly_rsi) >= 14 else 0
 
-        # Create flags
         weekly_rsi_in_range = 50 < w_rsi_val < 55
         monthly_rsi_in_range = 50 < m_rsi_val < 55
 
-        col_rets = monthly_returns[yahoo_sym].dropna()
-        col_rets_3m = rolling_3m_returns[yahoo_sym].dropna()
+        # FIX: Slice seasonality returns back down to 10 years (120 months) so 20-year RSI fetch doesn't skew it
+        col_rets = monthly_returns[yahoo_sym].dropna().tail(120)
+        col_rets_3m = rolling_3m_returns[yahoo_sym].dropna().tail(120)
+        
         if len(col_rets) < 60 or len(col_rets_3m) < 60: continue 
         
         # --- 1-Month Seasonality ---
