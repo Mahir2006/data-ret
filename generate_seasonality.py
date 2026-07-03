@@ -222,7 +222,13 @@ def generate_seasonality():
         seasonality_3m.index = [labels_3m[i] for i in seasonality_3m.index]
         
         meta = metadata.get(react_sym, {"name": react_sym, "sector": "Uncategorized"})
-        
+        # TEMPORARY DEBUG PRINT FOR TECH MAHINDRA
+        if yahoo_sym == "TECHM.NS":
+            print("\n--- DEBUG: TECHM.NS ---")
+            print("Last 3 Monthly Closes:\n", monthly_closes.tail(3))
+            print("Last 3 Monthly RSIs:\n", monthly_rsi.tail(3))
+            print("Last 5 Daily Volumes:\n", vol_series.tail(5))
+            print("-----------------------\n")
         results.append({
             "symbol": react_sym.replace(".NS", ""),
             "name": meta["name"],
