@@ -103,9 +103,7 @@ def generate_seasonality():
         chunk = all_tickers[i:i + chunk_size]
         track(f"--> Fetching chunk {i} to {i + len(chunk)}...")
         try:
-            # -------------------------------------------------------------------------
-            # THE FIX: Added auto_adjust=False to lock it to unadjusted historical closes
-            # -------------------------------------------------------------------------
+            # Fixed with auto_adjust=False to maintain chart alignment
             df = yf.download(
                 chunk, 
                 start=start_date, 
@@ -119,7 +117,6 @@ def generate_seasonality():
                 time.sleep(3)
                 continue
             
-            # Locked to standard 'Close' to match TradingView's default split-adjusted (but dividend-unadjusted) charts
             price_col = 'Close'
             
             if isinstance(df.columns, pd.MultiIndex):
@@ -179,7 +176,7 @@ def generate_seasonality():
         yahoo_sym = YAHOO_MAP.get(react_sym, react_sym)
         if yahoo_sym not in closes.columns: continue
         
-        # --- Volume Breakout Logic ---
+        # --- Volume Breakout Logic (TradingView Style) ---
         if yahoo_sym in volumes.columns:
             vol_series = volumes[yahoo_sym].dropna()
             vol_series = vol_series[vol_series > 0]
@@ -188,10 +185,15 @@ def generate_seasonality():
             
         volume_breakout = False
         
-        if len(vol_series) >= 3:
+        # We need at least 5 days of history to compute a 5-period SMA
+        if len(vol_series) >= 5:
             today_volume = float(vol_series.iloc[-1])
-            vol_sma_3 = float(vol_series.iloc[-3:].mean())
-            if vol_sma_3 > 0 and today_volume > vol_sma_3:
+            
+            # iloc[-5:] gets the last 5 values (including today's volume)
+            # This perfectly mirrors TradingView's standard ta.sma(volume, 5) logic
+            vol_sma_5 = float(vol_series.iloc[-5:].mean())
+            
+            if vol_sma_5 > 0 and today_volume > vol_sma_5:
                 volume_breakout = True
 
         # --- Weekly & Monthly RSI Logic ---
