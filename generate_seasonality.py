@@ -19,20 +19,31 @@ def track(msg):
     print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
 def calculate_rsi(series, period=14):
-    """Calculates standard Relative Strength Index (RSI)."""
-    if series.empty:
-        return pd.Series(dtype=float)
-    
-    delta = series.diff()
+    """Calculates Wilder's RSI exactly as TradingView does (SMA initialization)."""
+    if len(series) < period + 1:
+        return pd.Series(index=series.index, data=0.0)
+        
+    delta = series.diff().dropna()
     gain = delta.where(delta > 0, 0.0)
     loss = -delta.where(delta < 0, 0.0)
-    
-    # Standard Wilder's Smoothing
-    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
-    
+
+    avg_gain = pd.Series(index=gain.index, dtype=float)
+    avg_loss = pd.Series(index=loss.index, dtype=float)
+
+    # TradingView Step 1: Seed the very first value with an SMA of the first 14 periods
+    avg_gain.iloc[period-1] = gain.iloc[:period].mean()
+    avg_loss.iloc[period-1] = loss.iloc[:period].mean()
+
+    # TradingView Step 2: Apply Wilder's Smoothing for all subsequent periods
+    for i in range(period, len(gain)):
+        avg_gain.iloc[i] = (avg_gain.iloc[i-1] * (period - 1) + gain.iloc[i]) / period
+        avg_loss.iloc[i] = (avg_loss.iloc[i-1] * (period - 1) + loss.iloc[i]) / period
+
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
+    
+    # Realign index with the original series and fill initial NaN periods with 0
+    rsi = pd.Series(index=series.index, data=rsi).fillna(0)
     return rsi
 
 def get_live_nifty_500():
@@ -77,10 +88,10 @@ def generate_seasonality():
 
     all_tickers = list(set([YAHOO_MAP.get(sym, sym) for sym in universe_symbols]))
     
-    # FIX: Add 1 day to end_date so it includes the current trading day
+    # +1 Day to ensure we catch EOD data completely
     end_date = datetime.datetime.today() + datetime.timedelta(days=1)
     
-    # FIX: Pull 20 years to ensure RSI has enough historical warm-up to match TradingView
+    # Pull 20 years to ensure RSI has enough historical warm-up
     start_date = end_date - datetime.timedelta(days=365 * 20)
 
     track(f"Downloading historical data for {len(all_tickers)} symbols...")
@@ -97,8 +108,8 @@ def generate_seasonality():
                 time.sleep(3)
                 continue
             
-            # FIX: Force standard 'Close' instead of 'Adj Close' to avoid dividend distortion
-            price_col = 'Close'
+            # Using Adj Close to correctly handle stock splits and bonuses (like TECHM)
+            price_col = 'Adj Close' if 'Adj Close' in df.columns else 'Close'
             
             if isinstance(df.columns, pd.MultiIndex):
                 if price_col in df.columns.get_level_values(0):
@@ -132,7 +143,7 @@ def generate_seasonality():
         track("❌ FATAL: No data was downloaded.")
         return
 
-    # TZ cleanup for both dataframes in case of mixed YF formats
+    # TZ cleanup
     if hasattr(closes.index, 'tz') and closes.index.tz is not None:
         closes.index = closes.index.tz_localize(None)
     closes.index = pd.to_datetime(closes.index).normalize()
@@ -158,7 +169,7 @@ def generate_seasonality():
         if yahoo_sym not in closes.columns: continue
         
         # --- Volume Breakout Logic ---
-        # FIX: Filter out YF's zero-volume rows before evaluating
+        # Filter out YF's zero-volume ghost rows
         if yahoo_sym in volumes.columns:
             vol_series = volumes[yahoo_sym].dropna()
             vol_series = vol_series[vol_series > 0]
@@ -167,7 +178,7 @@ def generate_seasonality():
             
         volume_breakout = False
         
-        # FIX: Align with TradingView 3-period SMA (which includes today)
+        # 3-period SMA (TradingView style, includes today)
         if len(vol_series) >= 3:
             today_volume = float(vol_series.iloc[-1])
             vol_sma_3 = float(vol_series.iloc[-3:].mean())
@@ -178,8 +189,9 @@ def generate_seasonality():
         weekly_closes = closes[yahoo_sym].resample('W-FRI').last().dropna()
         monthly_closes = closes[yahoo_sym].resample('ME').last().dropna()
 
-        weekly_rsi = calculate_rsi(weekly_closes)
-        monthly_rsi = calculate_rsi(monthly_closes)
+        # Calculates using exactly period=14 by default
+        weekly_rsi = calculate_rsi(weekly_closes, period=14)
+        monthly_rsi = calculate_rsi(monthly_closes, period=14)
 
         w_rsi_val = float(weekly_rsi.iloc[-1]) if len(weekly_rsi) >= 14 else 0
         m_rsi_val = float(monthly_rsi.iloc[-1]) if len(monthly_rsi) >= 14 else 0
@@ -187,7 +199,7 @@ def generate_seasonality():
         weekly_rsi_in_range = 50 < w_rsi_val < 55
         monthly_rsi_in_range = 50 < m_rsi_val < 55
 
-        # FIX: Slice seasonality returns back down to 10 years (120 months) so 20-year RSI fetch doesn't skew it
+        # Slice seasonality returns back down to exactly 10 years (120 months)
         col_rets = monthly_returns[yahoo_sym].dropna().tail(120)
         col_rets_3m = rolling_3m_returns[yahoo_sym].dropna().tail(120)
         
