@@ -122,9 +122,13 @@ def fetch_stock_data(symbol, expected_month, expected_year):
         if q_income is None or q_income.empty or len(q_income.columns) < 2:
             return {"reported": False, "pat_q4": 0, "pat_q3": 0, "rev_q4": 0, "rev_q3": 0, "ebitda_q4": 0, "ebitda_q3": 0, "npm_q4": 0, "npm_q3": 0, "roe": 0}
 
-        # Check column timestamp to verify if current season has been filed
-        latest_date = q_income.columns[0]
-        has_reported = (latest_date.month == expected_month and latest_date.year == expected_year)
+        # Resilient date matching
+        latest_date = pd.to_datetime(q_income.columns[0])
+        if latest_date.tzinfo is not None:
+            latest_date = latest_date.tz_localize(None) # Strip timezone for safe comparison
+            
+        expected_q_end = pd.Timestamp(year=expected_year, month=expected_month, day=1) + pd.offsets.MonthEnd(0)
+        has_reported = abs((latest_date - expected_q_end).days) <= 15
 
         def get_row(df, possible_names):
             for name in possible_names:
@@ -221,6 +225,7 @@ def generate_earnings():
                         s_q4_ebitda.append(data["ebitda_q4"])
                         s_q4_npm.append(data["npm_q4"])
                         i_q4_pat.append(data["pat_q4"])
+                        i_q4_rev.append(data["rev_q4"])
                     
                     # Historical reference sets remain filled regardless
                     sq3_pat.append(data["pat_q3"])
