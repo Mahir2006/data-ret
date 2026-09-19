@@ -5,6 +5,8 @@ import time
 import requests
 import io
 import datetime
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Edge-case mappings for Yahoo Finance ticker mismatches
 YAHOO_MAP = {
@@ -38,7 +40,7 @@ def get_all_nse_equities():
                 sym = str(row['SYMBOL']).strip()
                 metadata[sym] = {
                     "name": str(row.get('NAME OF COMPANY', sym)).strip(),
-                    "sector": "Equity" # Master list lacks detailed sectors, so we default to Equity
+                    "sector": "Equity"
                 }
             track(f"Successfully loaded {len(metadata)} regular equities from NSE.")
     except Exception as e:
@@ -52,47 +54,65 @@ def generate_numerology_data():
         track("Fatal Error: No symbols fetched from NSE.")
         return
 
+    # Create a resilient session that automatically backs off and retries on 429 Rate Limits
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=3, 
+        backoff_factor=2, 
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+
     results = {}
     symbols = list(metadata.keys())
-    track(f"Fetching Market Cap for {len(symbols)} unique NSE symbols. This will take ~10-15 minutes...")
+    track(f"Fetching Market Cap for {len(symbols)} unique NSE symbols.")
+    track("Pacing requests to respect Yahoo's rate limits. This will take ~15-20 minutes...")
     
-    # Diagnostic lists
     fetch_errors = []
     missing_mcap_data = []
     
-    chunk_size = 50
-    for i in range(0, len(symbols), chunk_size):
-        chunk_symbols = symbols[i:i + chunk_size]
-        track(f"--> Processing batch {(i//chunk_size) + 1} of {(len(symbols)//chunk_size) + 1}...")
-        
-        for react_sym in chunk_symbols:
-            ns_sym = react_sym + ".NS"
-            yahoo_sym = YAHOO_MAP.get(ns_sym, ns_sym)
+    for i, react_sym in enumerate(symbols):
+        if i > 0 and i % 100 == 0:
+            track(f"--> Processed {i} / {len(symbols)} stocks...")
             
-            try:
-                ticker = yf.Ticker(yahoo_sym)
-                mcap_raw = ticker.info.get("marketCap", 0)
-                
-                if not mcap_raw or mcap_raw == 0:
-                    missing_mcap_data.append(react_sym)
-                
-                mcap_crores = round(mcap_raw / 10000000, 2) if mcap_raw else 0
-                
-                results[react_sym] = {
-                    "name": metadata[react_sym]["name"],
-                    "sector": metadata[react_sym]["sector"],
-                    "mcap": mcap_crores
-                }
-            except Exception as e:
-                fetch_errors.append(f"{react_sym} ({str(e)})")
-                results[react_sym] = {
-                    "name": metadata[react_sym]["name"],
-                    "sector": metadata[react_sym]["sector"],
-                    "mcap": 0
-                }
+        ns_sym = react_sym + ".NS"
+        yahoo_sym = YAHOO_MAP.get(ns_sym, ns_sym)
         
-        # 1.5-second pause between batches to respect Yahoo's rate limits
-        time.sleep(1.5)
+        try:
+            # Pass our custom resilient session to yfinance
+            ticker = yf.Ticker(yahoo_sym, session=session)
+            
+            # Use fast_info (much lighter on Yahoo's servers than .info)
+            try:
+                mcap_raw = ticker.fast_info['marketCap']
+            except:
+                # Fallback to standard info if fast_info fails
+                mcap_raw = ticker.info.get("marketCap", 0)
+            
+            if not mcap_raw or mcap_raw == 0:
+                missing_mcap_data.append(react_sym)
+            
+            mcap_crores = round(mcap_raw / 10000000, 2) if mcap_raw else 0
+            
+            results[react_sym] = {
+                "name": metadata[react_sym]["name"],
+                "sector": metadata[react_sym]["sector"],
+                "mcap": mcap_crores
+            }
+        except Exception as e:
+            fetch_errors.append(f"{react_sym} ({str(e)})")
+            results[react_sym] = {
+                "name": metadata[react_sym]["name"],
+                "sector": metadata[react_sym]["sector"],
+                "mcap": 0
+            }
+        
+        # Micro-pause *inside* the loop so we never blast Yahoo all at once
+        time.sleep(0.4)
         
     output = {
         "lastUpdated": datetime.datetime.now(datetime.timezone.utc).isoformat(),
