@@ -2,13 +2,11 @@ import yfinance as yf
 import pandas as pd
 import json
 import time
-import random # Added for anti-rate-limiting
+import random
 import requests
 import io
 import datetime
 import concurrent.futures
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 # Edge-case mappings for Yahoo Finance ticker mismatches
 YAHOO_MAP = {
@@ -49,29 +47,17 @@ def get_all_nse_equities():
             
     return metadata
 
-session = requests.Session()
-# INCREASED RETRY LIMITS to survive Yahoo rate-limiting
-retry_strategy = Retry(
-    total=5, 
-    backoff_factor=3, # Waits longer between retries (3s, 6s, 12s, etc.)
-    status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=["GET"]
-)
-adapter = HTTPAdapter(pool_connections=15, pool_maxsize=15, max_retries=retry_strategy)
-session.mount("http://", adapter)
-session.mount("https://", adapter)
-# Added a rotating-style browser agent just to be safe
-session.headers.update({'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
-
 def fetch_single_ticker(react_sym):
-    # Random sleep to prevent hammering Yahoo's servers all at the exact same millisecond
-    time.sleep(random.uniform(0.3, 1.2)) 
+    # Stagger requests by randomly pausing for 0.5 to 2 seconds
+    # This prevents all threads from hitting Yahoo at the exact same millisecond
+    time.sleep(random.uniform(0.5, 2.0))
     
     ns_sym = react_sym + ".NS"
     yahoo_sym = YAHOO_MAP.get(ns_sym, ns_sym)
     
     try:
-        ticker = yf.Ticker(yahoo_sym, session=session)
+        # DO NOT pass a custom session. Let yfinance handle its own secure cookies/crumbs.
+        ticker = yf.Ticker(yahoo_sym)
         
         # 1. Get Market Cap
         try:
@@ -84,19 +70,17 @@ def fetch_single_ticker(react_sym):
         # 2. Get EOD % Gain/Loss
         pct_change = 0.0
         try:
-            # Try via fast_info first (much faster for threading)
             try:
                 prev_close = ticker.fast_info['previousClose']
                 last_price = ticker.fast_info['lastPrice']
             except:
-                # Fallback to info dictionary
                 prev_close = ticker.info.get("previousClose", 0)
                 last_price = ticker.info.get("currentPrice", ticker.info.get("regularMarketPrice", 0))
             
             if prev_close and last_price and prev_close > 0:
                 pct_change = round(((last_price - prev_close) / prev_close) * 100, 2)
         except Exception:
-            pass # Keep it 0.0 if calculations fail
+            pass 
             
         return react_sym, mcap_crores, mcap_raw, pct_change, None
     except Exception as e:
@@ -110,14 +94,14 @@ def generate_ticker_data():
 
     results = {}
     symbols = list(metadata.keys())
-    track(f"Fetching Market Cap & EOD % Gain for {len(symbols)} unique NSE symbols using Multithreading...")
+    track(f"Fetching Market Cap & EOD % Gain for {len(symbols)} unique NSE symbols...")
     
     fetch_errors = []
     missing_mcap_data = []
     
     completed = 0
-    # REDUCED WORKERS from 10 to 4 so Yahoo doesn't block the connection
-    max_workers = 4 
+    # Safe worker limit to prevent IP bans
+    max_workers = 3 
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_sym = {executor.submit(fetch_single_ticker, sym): sym for sym in symbols}
@@ -159,7 +143,6 @@ def generate_ticker_data():
         print(f"\n⚠️ Missing Market Data on Yahoo ({len(missing_mcap_data)}):")
         print(f"   {', '.join(missing_mcap_data[:15])}" + ("..." if len(missing_mcap_data) > 15 else ""))
         
-    # Only print first 5 errors to avoid flooding the console
     if fetch_errors:
         print(f"\n❌ Exception/Network Errors ({len(fetch_errors)}):")
         for err in fetch_errors[:5]: 
