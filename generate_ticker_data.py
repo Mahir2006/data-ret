@@ -2,6 +2,7 @@ import yfinance as yf
 import pandas as pd
 import json
 import time
+import random # Added for anti-rate-limiting
 import requests
 import io
 import datetime
@@ -49,18 +50,23 @@ def get_all_nse_equities():
     return metadata
 
 session = requests.Session()
+# INCREASED RETRY LIMITS to survive Yahoo rate-limiting
 retry_strategy = Retry(
-    total=3, 
-    backoff_factor=2, 
+    total=5, 
+    backoff_factor=3, # Waits longer between retries (3s, 6s, 12s, etc.)
     status_forcelist=[429, 500, 502, 503, 504],
     allowed_methods=["GET"]
 )
 adapter = HTTPAdapter(pool_connections=15, pool_maxsize=15, max_retries=retry_strategy)
 session.mount("http://", adapter)
 session.mount("https://", adapter)
-session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+# Added a rotating-style browser agent just to be safe
+session.headers.update({'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'})
 
 def fetch_single_ticker(react_sym):
+    # Random sleep to prevent hammering Yahoo's servers all at the exact same millisecond
+    time.sleep(random.uniform(0.3, 1.2)) 
+    
     ns_sym = react_sym + ".NS"
     yahoo_sym = YAHOO_MAP.get(ns_sym, ns_sym)
     
@@ -110,7 +116,8 @@ def generate_ticker_data():
     missing_mcap_data = []
     
     completed = 0
-    max_workers = 10 
+    # REDUCED WORKERS from 10 to 4 so Yahoo doesn't block the connection
+    max_workers = 4 
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_sym = {executor.submit(fetch_single_ticker, sym): sym for sym in symbols}
@@ -127,11 +134,11 @@ def generate_ticker_data():
                 "name": metadata[react_sym]["name"],
                 "sector": metadata[react_sym]["sector"],
                 "mcap": mcap_crores,
-                "pctChange": pct_change # Added the EOD gain to our final output
+                "pctChange": pct_change
             }
             
             completed += 1
-            if completed % 200 == 0:
+            if completed % 100 == 0:
                 track(f"--> Processed {completed} / {len(symbols)} stocks...")
                 
     output = {
@@ -152,9 +159,10 @@ def generate_ticker_data():
         print(f"\n⚠️ Missing Market Data on Yahoo ({len(missing_mcap_data)}):")
         print(f"   {', '.join(missing_mcap_data[:15])}" + ("..." if len(missing_mcap_data) > 15 else ""))
         
+    # Only print first 5 errors to avoid flooding the console
     if fetch_errors:
         print(f"\n❌ Exception/Network Errors ({len(fetch_errors)}):")
-        for err in fetch_errors[:10]: 
+        for err in fetch_errors[:5]: 
             print(f"   - {err}")
     print("="*50 + "\n")
     
