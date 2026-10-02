@@ -66,15 +66,35 @@ def fetch_single_ticker(react_sym):
     
     try:
         ticker = yf.Ticker(yahoo_sym, session=session)
+        
+        # 1. Get Market Cap
         try:
             mcap_raw = ticker.fast_info['marketCap']
         except:
             mcap_raw = ticker.info.get("marketCap", 0)
-        
+            
         mcap_crores = round(mcap_raw / 10000000, 2) if mcap_raw else 0
-        return react_sym, mcap_crores, mcap_raw, None
+        
+        # 2. Get EOD % Gain/Loss
+        pct_change = 0.0
+        try:
+            # Try via fast_info first (much faster for threading)
+            try:
+                prev_close = ticker.fast_info['previousClose']
+                last_price = ticker.fast_info['lastPrice']
+            except:
+                # Fallback to info dictionary
+                prev_close = ticker.info.get("previousClose", 0)
+                last_price = ticker.info.get("currentPrice", ticker.info.get("regularMarketPrice", 0))
+            
+            if prev_close and last_price and prev_close > 0:
+                pct_change = round(((last_price - prev_close) / prev_close) * 100, 2)
+        except Exception:
+            pass # Keep it 0.0 if calculations fail
+            
+        return react_sym, mcap_crores, mcap_raw, pct_change, None
     except Exception as e:
-        return react_sym, 0, 0, str(e)
+        return react_sym, 0, 0, 0.0, str(e)
 
 def generate_ticker_data():
     metadata = get_all_nse_equities()
@@ -84,7 +104,7 @@ def generate_ticker_data():
 
     results = {}
     symbols = list(metadata.keys())
-    track(f"Fetching Market Cap for {len(symbols)} unique NSE symbols using Multithreading...")
+    track(f"Fetching Market Cap & EOD % Gain for {len(symbols)} unique NSE symbols using Multithreading...")
     
     fetch_errors = []
     missing_mcap_data = []
@@ -96,7 +116,7 @@ def generate_ticker_data():
         future_to_sym = {executor.submit(fetch_single_ticker, sym): sym for sym in symbols}
         
         for future in concurrent.futures.as_completed(future_to_sym):
-            react_sym, mcap_crores, mcap_raw, error = future.result()
+            react_sym, mcap_crores, mcap_raw, pct_change, error = future.result()
             
             if error:
                 fetch_errors.append(f"{react_sym} ({error})")
@@ -106,7 +126,8 @@ def generate_ticker_data():
             results[react_sym] = {
                 "name": metadata[react_sym]["name"],
                 "sector": metadata[react_sym]["sector"],
-                "mcap": mcap_crores
+                "mcap": mcap_crores,
+                "pctChange": pct_change # Added the EOD gain to our final output
             }
             
             completed += 1
@@ -125,10 +146,10 @@ def generate_ticker_data():
     print("📊 TICKER DATA EXTRACTION REPORT")
     print("="*50)
     print(f"✅ Total Processed: {len(results)} stocks")
-    print(f"✅ Successful Mcap Fetches: {len(results) - len(missing_mcap_data) - len(fetch_errors)}")
+    print(f"✅ Successful Fetches: {len(results) - len(missing_mcap_data) - len(fetch_errors)}")
     
     if missing_mcap_data:
-        print(f"\n⚠️ Missing Market Cap Data on Yahoo ({len(missing_mcap_data)}):")
+        print(f"\n⚠️ Missing Market Data on Yahoo ({len(missing_mcap_data)}):")
         print(f"   {', '.join(missing_mcap_data[:15])}" + ("..." if len(missing_mcap_data) > 15 else ""))
         
     if fetch_errors:
