@@ -20,6 +20,24 @@ YAHOO_MAP = {
 def track(msg):
     print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
+def get_fo_symbols():
+    track("Fetching official F&O symbols from NSE...")
+    url = "https://archives.nseindia.com/content/fo/fo_mktlots.csv"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    fo_symbols = set()
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code == 200 and "<html" not in response.text.lower()[:500]:
+            df = pd.read_csv(io.StringIO(response.text))
+            df.columns = df.columns.str.strip()
+            if 'SYMBOL' in df.columns:
+                for sym in df['SYMBOL']:
+                    fo_symbols.add(str(sym).strip())
+        track(f"Successfully loaded {len(fo_symbols)} F&O symbols.")
+    except Exception as e:
+        track(f"⚠️ Error fetching F&O list: {e}")
+    return fo_symbols
+
 def get_all_nse_equities():
     track("Fetching master list of ALL active NSE equities (EQUITY_L.csv)...")
     
@@ -48,15 +66,12 @@ def get_all_nse_equities():
     return metadata
 
 def fetch_single_ticker(react_sym):
-    # Stagger requests by randomly pausing for 0.5 to 2 seconds
-    # This prevents all threads from hitting Yahoo at the exact same millisecond
     time.sleep(random.uniform(0.5, 2.0))
     
     ns_sym = react_sym + ".NS"
     yahoo_sym = YAHOO_MAP.get(ns_sym, ns_sym)
     
     try:
-        # DO NOT pass a custom session. Let yfinance handle its own secure cookies/crumbs.
         ticker = yf.Ticker(yahoo_sym)
         
         # 1. Get Market Cap
@@ -92,6 +107,9 @@ def generate_ticker_data():
         track("Fatal Error: No symbols fetched from NSE.")
         return
 
+    # Fetch official F&O List
+    fo_symbols = get_fo_symbols()
+
     results = {}
     symbols = list(metadata.keys())
     track(f"Fetching Market Cap & EOD % Gain for {len(symbols)} unique NSE symbols...")
@@ -100,7 +118,6 @@ def generate_ticker_data():
     missing_mcap_data = []
     
     completed = 0
-    # Safe worker limit to prevent IP bans
     max_workers = 3 
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -118,7 +135,8 @@ def generate_ticker_data():
                 "name": metadata[react_sym]["name"],
                 "sector": metadata[react_sym]["sector"],
                 "mcap": mcap_crores,
-                "pctChange": pct_change
+                "pctChange": pct_change,
+                "isFNO": react_sym in fo_symbols # Flagging F&O Stocks
             }
             
             completed += 1
