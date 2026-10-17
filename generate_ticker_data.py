@@ -16,7 +16,6 @@ YAHOO_MAP = {
     "GMRINFRA.NS": "GMRAIRPORT.NS", "WELSPUNIND.NS": "WELSPUNLIV.NS", "MCDOWELL-N.NS": "UNITDSPR.NS", 
     "MAHINDRAHOLIDAYS.NS": "MHRIL.NS", "CHAMBALFERT.NS": "CHAMBLFERT.NS", "KPR.NS": "KPRMILL.NS", 
     "IPCA.NS": "IPCALAB.NS", "M&M.NS": "M&M.NS", "BAJAJ-AUTO.NS": "BAJAJ-AUTO.NS"
-    # Removed 3BBLACKBIO/KILPEST as Yahoo fully purged the old ticker alias
 }
 
 def track(msg):
@@ -24,34 +23,43 @@ def track(msg):
 
 def get_fo_symbols():
     track("Fetching official F&O symbols from NSE...")
-    url = "https://archives.nseindia.com/content/fo/fo_mktlots.csv"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    # Updated to the new, stable nsearchives endpoint
+    url = "https://nsearchives.nseindia.com/content/fo/fo_mktlots.csv"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/csv,application/csv,text/html,application/xhtml+xml',
+    }
     fo_symbols = set()
     
     try:
         response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code == 200:
-            # Clean corrupt data
+        if response.status_code == 200 and "<html" not in response.text.lower()[:500]:
+            # Clean corrupt data (null bytes)
             clean_text = response.text.replace('\x00', '').replace('\0', '')
             
             # Bulletproof raw CSV parser
             reader = csv.reader(clean_text.splitlines())
+            sym_index = -1
             
-            # Extract headers from the first valid row
-            headers_list = []
             for row in reader:
-                if row:
-                    headers_list = [str(item).strip().upper() for item in row]
-                    break
-            
-            if 'SYMBOL' in headers_list:
-                sym_index = headers_list.index('SYMBOL')
-                for row in reader:
-                    # Ignore messy NSE footer rows
-                    if len(row) > sym_index:
-                        sym = str(row[sym_index]).strip()
-                        if sym and sym != "SYMBOL":
-                            fo_symbols.add(sym)
+                if not row:
+                    continue
+                
+                clean_row = [str(item).strip().upper() for item in row]
+                
+                # 1. Hunt for the header row
+                if sym_index == -1:
+                    if 'SYMBOL' in clean_row:
+                        sym_index = clean_row.index('SYMBOL')
+                    continue 
+                
+                # 2. Extract data safely
+                if sym_index != -1 and len(clean_row) > sym_index:
+                    sym = clean_row[sym_index]
+                    
+                    # Ignore empty spaces, repeated headers, or long disclaimer footers
+                    if sym and sym != "SYMBOL" and len(sym) < 25:
+                        fo_symbols.add(sym)
                             
         track(f"Successfully loaded {len(fo_symbols)} F&O symbols.")
     except Exception as e:
@@ -61,9 +69,12 @@ def get_fo_symbols():
 
 def get_all_nse_equities():
     track("Fetching master list of ALL active NSE equities (EQUITY_L.csv)...")
-    
-    url = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    # Updated master list endpoint as well
+    url = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/csv,application/csv,text/html,application/xhtml+xml',
+    }
     metadata = {}
     
     try:
