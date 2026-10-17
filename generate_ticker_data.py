@@ -31,12 +31,18 @@ def get_fo_symbols():
     try:
         response = requests.get(url, headers=headers, timeout=15)
         if response.status_code == 200 and "<html" not in response.text.lower()[:500]:
-            # Use Python's native CSV reader instead of Pandas to prevent crashes on messy NSE rows
-            reader = csv.reader(response.text.splitlines())
+            # CRITICAL FIX: Strip all hidden NUL bytes (\x00) from the messy NSE file
+            clean_text = response.text.replace('\x00', '').replace('\0', '')
+            
+            # Use Python's native CSV reader on the cleaned text
+            reader = csv.reader(clean_text.splitlines())
             headers_found = False
             sym_index = -1
             
             for row in reader:
+                # Skip completely empty rows
+                if not row: continue 
+                
                 clean_row = [str(item).strip() for item in row]
                 
                 if not headers_found:
