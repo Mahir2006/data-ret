@@ -7,7 +7,7 @@ import requests
 import io
 import datetime
 import concurrent.futures
-import csv # Added to safely parse messy NSE files
+import csv
 
 # Edge-case mappings for Yahoo Finance ticker mismatches
 YAHOO_MAP = {
@@ -15,8 +15,8 @@ YAHOO_MAP = {
     "KALYAN.NS": "KALYANKJIL.NS", "TVSMOTORS.NS": "TVSMOTOR.NS", "FINOLEX.NS": "FINCABLES.NS", 
     "GMRINFRA.NS": "GMRAIRPORT.NS", "WELSPUNIND.NS": "WELSPUNLIV.NS", "MCDOWELL-N.NS": "UNITDSPR.NS", 
     "MAHINDRAHOLIDAYS.NS": "MHRIL.NS", "CHAMBALFERT.NS": "CHAMBLFERT.NS", "KPR.NS": "KPRMILL.NS", 
-    "IPCA.NS": "IPCALAB.NS", "M&M.NS": "M&M.NS", "BAJAJ-AUTO.NS": "BAJAJ-AUTO.NS",
-    "3BBLACKBIO.NS": "KILPEST.NS"
+    "IPCA.NS": "IPCALAB.NS", "M&M.NS": "M&M.NS", "BAJAJ-AUTO.NS": "BAJAJ-AUTO.NS"
+    # Removed 3BBLACKBIO/KILPEST as Yahoo fully purged the old ticker alias
 }
 
 def track(msg):
@@ -30,30 +30,29 @@ def get_fo_symbols():
     
     try:
         response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code == 200 and "<html" not in response.text.lower()[:500]:
-            # CRITICAL FIX: Strip all hidden NUL bytes (\x00) from the messy NSE file
+        if response.status_code == 200:
+            # Clean corrupt data
             clean_text = response.text.replace('\x00', '').replace('\0', '')
             
-            # Use Python's native CSV reader on the cleaned text
+            # Bulletproof raw CSV parser
             reader = csv.reader(clean_text.splitlines())
-            headers_found = False
-            sym_index = -1
             
+            # Extract headers from the first valid row
+            headers_list = []
             for row in reader:
-                # Skip completely empty rows
-                if not row: continue 
-                
-                clean_row = [str(item).strip() for item in row]
-                
-                if not headers_found:
-                    if 'SYMBOL' in clean_row:
-                        headers_found = True
-                        sym_index = clean_row.index('SYMBOL')
-                elif headers_found and sym_index != -1 and len(clean_row) > sym_index:
-                    sym = clean_row[sym_index]
-                    if sym and sym != "SYMBOL":
-                        fo_symbols.add(sym)
-                        
+                if row:
+                    headers_list = [str(item).strip().upper() for item in row]
+                    break
+            
+            if 'SYMBOL' in headers_list:
+                sym_index = headers_list.index('SYMBOL')
+                for row in reader:
+                    # Ignore messy NSE footer rows
+                    if len(row) > sym_index:
+                        sym = str(row[sym_index]).strip()
+                        if sym and sym != "SYMBOL":
+                            fo_symbols.add(sym)
+                            
         track(f"Successfully loaded {len(fo_symbols)} F&O symbols.")
     except Exception as e:
         track(f"⚠️ Error fetching F&O list: {e}")
@@ -88,7 +87,6 @@ def get_all_nse_equities():
     return metadata
 
 def fetch_single_ticker(react_sym):
-    # Stagger requests by randomly pausing to avoid Yahoo rate limits
     time.sleep(random.uniform(0.5, 2.0))
     
     ns_sym = react_sym + ".NS"
@@ -153,7 +151,6 @@ def generate_ticker_data():
     missing_mcap_data = []
     
     completed = 0
-    # Safe worker limit to prevent IP bans
     max_workers = 3 
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
