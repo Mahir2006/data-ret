@@ -7,6 +7,7 @@ import requests
 import io
 import datetime
 import concurrent.futures
+import csv # Added to safely parse messy NSE files
 
 # Edge-case mappings for Yahoo Finance ticker mismatches
 YAHOO_MAP = {
@@ -14,7 +15,8 @@ YAHOO_MAP = {
     "KALYAN.NS": "KALYANKJIL.NS", "TVSMOTORS.NS": "TVSMOTOR.NS", "FINOLEX.NS": "FINCABLES.NS", 
     "GMRINFRA.NS": "GMRAIRPORT.NS", "WELSPUNIND.NS": "WELSPUNLIV.NS", "MCDOWELL-N.NS": "UNITDSPR.NS", 
     "MAHINDRAHOLIDAYS.NS": "MHRIL.NS", "CHAMBALFERT.NS": "CHAMBLFERT.NS", "KPR.NS": "KPRMILL.NS", 
-    "IPCA.NS": "IPCALAB.NS", "M&M.NS": "M&M.NS", "BAJAJ-AUTO.NS": "BAJAJ-AUTO.NS"
+    "IPCA.NS": "IPCALAB.NS", "M&M.NS": "M&M.NS", "BAJAJ-AUTO.NS": "BAJAJ-AUTO.NS",
+    "3BBLACKBIO.NS": "KILPEST.NS"
 }
 
 def track(msg):
@@ -25,17 +27,31 @@ def get_fo_symbols():
     url = "https://archives.nseindia.com/content/fo/fo_mktlots.csv"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     fo_symbols = set()
+    
     try:
         response = requests.get(url, headers=headers, timeout=15)
         if response.status_code == 200 and "<html" not in response.text.lower()[:500]:
-            df = pd.read_csv(io.StringIO(response.text))
-            df.columns = df.columns.str.strip()
-            if 'SYMBOL' in df.columns:
-                for sym in df['SYMBOL']:
-                    fo_symbols.add(str(sym).strip())
+            # Use Python's native CSV reader instead of Pandas to prevent crashes on messy NSE rows
+            reader = csv.reader(response.text.splitlines())
+            headers_found = False
+            sym_index = -1
+            
+            for row in reader:
+                clean_row = [str(item).strip() for item in row]
+                
+                if not headers_found:
+                    if 'SYMBOL' in clean_row:
+                        headers_found = True
+                        sym_index = clean_row.index('SYMBOL')
+                elif headers_found and sym_index != -1 and len(clean_row) > sym_index:
+                    sym = clean_row[sym_index]
+                    if sym and sym != "SYMBOL":
+                        fo_symbols.add(sym)
+                        
         track(f"Successfully loaded {len(fo_symbols)} F&O symbols.")
     except Exception as e:
         track(f"⚠️ Error fetching F&O list: {e}")
+        
     return fo_symbols
 
 def get_all_nse_equities():
@@ -66,38 +82,51 @@ def get_all_nse_equities():
     return metadata
 
 def fetch_single_ticker(react_sym):
+    # Stagger requests by randomly pausing to avoid Yahoo rate limits
     time.sleep(random.uniform(0.5, 2.0))
     
     ns_sym = react_sym + ".NS"
     yahoo_sym = YAHOO_MAP.get(ns_sym, ns_sym)
     
+    mcap_val = 0
+    pct_change = 0.0
+    
     try:
         ticker = yf.Ticker(yahoo_sym)
         
-        # 1. Get Market Cap
+        # 1. Try pulling fast_info for speed
         try:
-            mcap_raw = ticker.fast_info['marketCap']
+            mcap_val = ticker.fast_info.get('marketCap', 0)
+            prev_close = ticker.fast_info.get('previousClose', 0)
+            last_price = ticker.fast_info.get('lastPrice', 0)
         except:
-            mcap_raw = ticker.info.get("marketCap", 0)
-            
-        mcap_crores = round(mcap_raw / 10000000, 2) if mcap_raw else 0
-        
-        # 2. Get EOD % Gain/Loss
-        pct_change = 0.0
-        try:
+            prev_close = 0
+            last_price = 0
+
+        # 2. If fast_info is incomplete, fall back to heavy .info dictionary
+        info = {}
+        if not mcap_val or not prev_close or not last_price:
             try:
-                prev_close = ticker.fast_info['previousClose']
-                last_price = ticker.fast_info['lastPrice']
+                info = ticker.info
+                if not mcap_val: mcap_val = info.get("marketCap", 0)
+                if not prev_close: prev_close = info.get("previousClose", 0)
+                if not last_price: last_price = info.get("currentPrice", info.get("regularMarketPrice", 0))
             except:
-                prev_close = ticker.info.get("previousClose", 0)
-                last_price = ticker.info.get("currentPrice", ticker.info.get("regularMarketPrice", 0))
+                pass
+
+        # 3. MANUAL CALCULATION (Crucial for missing NSE SME stocks)
+        if (not mcap_val or mcap_val == 0) and last_price:
+            shares = info.get("sharesOutstanding", 0)
+            if shares > 0:
+                mcap_val = shares * last_price
+
+        # Calculate the percentage gain
+        if prev_close and last_price and prev_close > 0:
+            pct_change = round(((last_price - prev_close) / prev_close) * 100, 2)
             
-            if prev_close and last_price and prev_close > 0:
-                pct_change = round(((last_price - prev_close) / prev_close) * 100, 2)
-        except Exception:
-            pass 
-            
-        return react_sym, mcap_crores, mcap_raw, pct_change, None
+        mcap_crores = round(mcap_val / 10000000, 2) if mcap_val else 0
+        return react_sym, mcap_crores, mcap_val, pct_change, None
+
     except Exception as e:
         return react_sym, 0, 0, 0.0, str(e)
 
@@ -118,6 +147,7 @@ def generate_ticker_data():
     missing_mcap_data = []
     
     completed = 0
+    # Safe worker limit to prevent IP bans
     max_workers = 3 
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
