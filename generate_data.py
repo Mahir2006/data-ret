@@ -13,18 +13,19 @@ YAHOO_MAP = {
     "KALYAN.NS": "KALYANKJIL.NS", "TVSMOTORS.NS": "TVSMOTOR.NS", "FINOLEX.NS": "FINCABLES.NS", 
     "GMRINFRA.NS": "GMRAIRPORT.NS", "WELSPUNIND.NS": "WELSPUNLIV.NS", "MCDOWELL-N.NS": "UNITDSPR.NS", 
     "MAHINDRAHOLIDAYS.NS": "MHRIL.NS", "CHAMBALFERT.NS": "CHAMBLFERT.NS", "KPR.NS": "KPRMILL.NS", 
-    "IPCA.NS": "IPCALAB.NS", "M&M.NS": "M&M.NS", "BAJAJ-AUTO.NS": "BAJAJ-AUTO.NS"
+    "IPCA.NS": "IPCALAB.NS", "M&M.NS": "M&M.NS", "BAJAJ-AUTO.NS": "BAJAJ-AUTO.NS",
+    # NEW FIXES: Mapping for REITs and Ticker Changes
+    "BAGMANE.NS": "BAGMANE.RR", 
+    "ICICILIFE.NS": "ICICIPRULI.NS"
 }
 
 # ─── 1. FETCH LIVE NIFTY 500 FROM NSE ───────────────────────────────────────────
 def get_live_nifty_500():
     print("Fetching live Nifty 500 constituents and metadata from NSE...")
     
+    # NEW FIXES: Updated to the new NSE Archives subdomain and exact casing for indices
     urls = [
-        # Primary: The new NSE archives subdomain
         "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
-        
-        # Fallback: NiftyIndices (requires www. and exact case)
         "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"
     ]
     
@@ -166,7 +167,10 @@ def fetch_market_data():
             closes.index = closes.index.tz_localize(None)
         closes.index = pd.to_datetime(closes.index).normalize()
         
-        closes = closes.ffill().dropna(how='all')
+        # NEW FIX: Drop empty rows, THEN drop empty columns to prevent entirely missing 
+        # stock data from incorrectly landing in the "Recent IPO" bucket.
+        closes = closes.ffill().dropna(how='all').dropna(axis=1, how='all')
+        
         valid_downloaded_symbols = set(closes.columns)
 
         for react_symbol in universe_symbols:
