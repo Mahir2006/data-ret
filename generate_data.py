@@ -21,8 +21,11 @@ def get_live_nifty_500():
     print("Fetching live Nifty 500 constituents and metadata from NSE...")
     
     urls = [
-        "https://niftyindices.com/Indexconstituent/ind_nifty500list.csv",
-        "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+        # Primary: The new NSE archives subdomain
+        "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
+        
+        # Fallback: NiftyIndices (requires www. and exact case)
+        "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"
     ]
     
     headers = {
