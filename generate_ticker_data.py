@@ -8,6 +8,7 @@ import io
 import datetime
 import concurrent.futures
 import csv
+import gc
 
 # Edge-case mappings for Yahoo Finance ticker mismatches
 YAHOO_MAP = {
@@ -23,7 +24,6 @@ def track(msg):
 
 def get_fo_symbols():
     track("Fetching official F&O symbols from NSE...")
-    # Updated to the new, stable nsearchives endpoint
     url = "https://nsearchives.nseindia.com/content/fo/fo_mktlots.csv"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -34,10 +34,7 @@ def get_fo_symbols():
     try:
         response = requests.get(url, headers=headers, timeout=15)
         if response.status_code == 200 and "<html" not in response.text.lower()[:500]:
-            # Clean corrupt data (null bytes)
             clean_text = response.text.replace('\x00', '').replace('\0', '')
-            
-            # Bulletproof raw CSV parser
             reader = csv.reader(clean_text.splitlines())
             sym_index = -1
             
@@ -47,17 +44,13 @@ def get_fo_symbols():
                 
                 clean_row = [str(item).strip().upper() for item in row]
                 
-                # 1. Hunt for the header row
                 if sym_index == -1:
                     if 'SYMBOL' in clean_row:
                         sym_index = clean_row.index('SYMBOL')
                     continue 
                 
-                # 2. Extract data safely
                 if sym_index != -1 and len(clean_row) > sym_index:
                     sym = clean_row[sym_index]
-                    
-                    # Ignore empty spaces, repeated headers, or long disclaimer footers
                     if sym and sym != "SYMBOL" and len(sym) < 25:
                         fo_symbols.add(sym)
                             
@@ -69,7 +62,6 @@ def get_fo_symbols():
 
 def get_all_nse_equities():
     track("Fetching master list of ALL active NSE equities (EQUITY_L.csv)...")
-    # Updated master list endpoint as well
     url = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -82,7 +74,6 @@ def get_all_nse_equities():
         if response.status_code == 200 and "<html" not in response.text.lower()[:500]:
             df = pd.read_csv(io.StringIO(response.text))
             df.columns = df.columns.str.strip()
-            
             df = df[df['SERIES'].astype(str).str.strip() == 'EQ']
             
             for _, row in df.iterrows():
@@ -105,6 +96,7 @@ def fetch_single_ticker(react_sym):
     
     mcap_val = 0
     pct_change = 0.0
+    ticker = None
     
     try:
         ticker = yf.Ticker(yahoo_sym)
@@ -144,6 +136,10 @@ def fetch_single_ticker(react_sym):
 
     except Exception as e:
         return react_sym, 0, 0, 0.0, str(e)
+    finally:
+        # EXPLICITLY DESTROY the yfinance object to free RAM
+        if ticker:
+            del ticker
 
 def generate_ticker_data():
     metadata = get_all_nse_equities()
@@ -151,9 +147,7 @@ def generate_ticker_data():
         track("Fatal Error: No symbols fetched from NSE.")
         return
 
-    # Fetch official F&O List
     fo_symbols = get_fo_symbols()
-
     results = {}
     symbols = list(metadata.keys())
     track(f"Fetching Market Cap & EOD % Gain for {len(symbols)} unique NSE symbols...")
@@ -163,29 +157,37 @@ def generate_ticker_data():
     
     completed = 0
     max_workers = 3 
+    chunk_size = 150 # Process in batches of 150 to prevent OOM errors in GitHub Actions
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_sym = {executor.submit(fetch_single_ticker, sym): sym for sym in symbols}
+    for i in range(0, len(symbols), chunk_size):
+        chunk = symbols[i:i + chunk_size]
         
-        for future in concurrent.futures.as_completed(future_to_sym):
-            react_sym, mcap_crores, mcap_raw, pct_change, error = future.result()
+        # Spin up a fresh executor for this specific chunk
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_sym = {executor.submit(fetch_single_ticker, sym): sym for sym in chunk}
             
-            if error:
-                fetch_errors.append(f"{react_sym} ({error})")
-            elif not mcap_raw or mcap_raw == 0:
-                missing_mcap_data.append(react_sym)
+            for future in concurrent.futures.as_completed(future_to_sym):
+                react_sym, mcap_crores, mcap_raw, pct_change, error = future.result()
                 
-            results[react_sym] = {
-                "name": metadata[react_sym]["name"],
-                "sector": metadata[react_sym]["sector"],
-                "mcap": mcap_crores,
-                "pctChange": pct_change,
-                "isFNO": react_sym in fo_symbols # Flagging F&O Stocks
-            }
-            
-            completed += 1
-            if completed % 100 == 0:
-                track(f"--> Processed {completed} / {len(symbols)} stocks...")
+                if error:
+                    fetch_errors.append(f"{react_sym} ({error})")
+                elif not mcap_raw or mcap_raw == 0:
+                    missing_mcap_data.append(react_sym)
+                    
+                results[react_sym] = {
+                    "name": metadata[react_sym]["name"],
+                    "sector": metadata[react_sym]["sector"],
+                    "mcap": mcap_crores,
+                    "pctChange": pct_change,
+                    "isFNO": react_sym in fo_symbols
+                }
+                
+                completed += 1
+                if completed % 50 == 0:
+                    track(f"--> Processed {completed} / {len(symbols)} stocks...")
+        
+        # AGGRESSIVE GARBAGE COLLECTION: Wipe yfinance caching from RAM after each chunk
+        gc.collect()
                 
     output = {
         "lastUpdated": datetime.datetime.now(datetime.timezone.utc).isoformat(),
