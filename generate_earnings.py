@@ -6,32 +6,57 @@ import numpy as np
 import time
 import requests
 import io
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# ─── HELPER: SAFE MEAN FOR JSON SERIALIZATION ──────────────────────────────────
+def safe_mean(lst):
+    clean = [x for x in lst if not pd.isna(x)]
+    return round(float(np.mean(clean)), 1) if clean else 0.0
 
 # ─── 1. FETCH LIVE NIFTY 500 FROM NSE ───────────────────────────────────────────
 def get_live_nifty_500():
     print("Fetching live Nifty 500 constituents from NSE...")
-    url = "https://niftyindices.com/Indexconstituent/ind_nifty500list.csv"
+    
+    urls = [
+        "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
+        "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"
+    ]
     
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/csv,text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Connection': 'keep-alive',
     }
     
-    try:
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code != 200:
-            print(f"Failed to fetch NSE data. Status: {response.status_code}")
-            return pd.DataFrame()
+    session = requests.Session()
+    retry_strategy = Retry(
+        total=3, 
+        backoff_factor=2, 
+        status_forcelist=[403, 429, 500, 502, 503, 504],
+        allowed_methods=["GET"]
+    )
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    session.headers.update(headers)
+    
+    for url in urls:
+        try:
+            response = session.get(url, timeout=15)
+            if response.status_code == 200 and "<html" not in response.text.lower()[:500]:
+                df = pd.read_csv(io.StringIO(response.text))
+                # Clean trailing spaces in headers just in case
+                df.columns = df.columns.str.strip()
+                df = df[~df['Symbol'].str.contains("DUMMY", case=False, na=False)]
+                df['YF_Symbol'] = df['Symbol'].astype(str).str.strip() + ".NS"
+                return df
+        except Exception as e:
+            print(f"Warning: Failed to fetch from {url} - {e}")
             
-        df = pd.read_csv(io.StringIO(response.text))
-        df = df[~df['Symbol'].str.contains("DUMMY", case=False, na=False)]
-        df['YF_Symbol'] = df['Symbol'].astype(str).str.strip() + ".NS"
-        return df
-    except Exception as e:
-        print(f"Error fetching NSE list: {e}")
-        return pd.DataFrame()
+    print("Fatal Error: Could not fetch NSE data from any endpoint.")
+    return pd.DataFrame()
 
 # ─── 2. BUILD DYNAMIC HIERARCHY ────────────────────────────────────────────────
 def build_dynamic_hierarchy():
@@ -105,7 +130,8 @@ def get_yf_sym(sym):
         "KALYAN.NS": "KALYANKJIL.NS", "TVSMOTORS.NS": "TVSMOTOR.NS", "FINOLEX.NS": "FINCABLES.NS", 
         "GMRINFRA.NS": "GMRAIRPORT.NS", "WELSPUNIND.NS": "WELSPUNLIV.NS", "MCDOWELL-N.NS": "UNITDSPR.NS", 
         "MAHINDRAHOLIDAYS.NS": "MHRIL.NS", "CHAMBALFERT.NS": "CHAMBLFERT.NS", "KPR.NS": "KPRMILL.NS", 
-        "IPCA.NS": "IPCALAB.NS", "M&M.NS": "M&M.NS", "BAJAJ-AUTO.NS": "BAJAJ-AUTO.NS"
+        "IPCA.NS": "IPCALAB.NS", "M&M.NS": "M&M.NS", "BAJAJ-AUTO.NS": "BAJAJ-AUTO.NS",
+        "BAGMANE.NS": "BAGMANE.RR", "ICICILIFE.NS": "ICICIPRULI.NS"
     }
     return fixes.get(sym, sym)
 
@@ -113,10 +139,13 @@ def get_yf_sym(sym):
 def fetch_stock_data(symbol, expected_month, expected_year):
     yf_sym = get_yf_sym(symbol)
     ticker = yf.Ticker(yf_sym)
-    time.sleep(0.5)
+    time.sleep(0.1) # Reduced sleep to speed up extraction slightly
     
     try:
         q_income = ticker.quarterly_income_stmt
+        if q_income is None or q_income.empty:
+            q_income = ticker.quarterly_financials # Fallback
+            
         info = ticker.info
         
         if q_income is None or q_income.empty or len(q_income.columns) < 2:
@@ -141,7 +170,8 @@ def fetch_stock_data(symbol, expected_month, expected_year):
         ebitda = get_row(q_income, ["EBITDA", "Ebitda", "Operating Income"])
 
         def calc_growth(curr, prev):
-            if prev == 0 or prev is None: return 0
+            if pd.isna(prev) or prev == 0 or prev is None: return 0
+            if pd.isna(curr): return 0
             return ((curr - prev) / abs(prev)) * 100
 
         roe_raw = info.get('returnOnEquity', 0)
@@ -237,38 +267,38 @@ def generate_earnings():
                     i_q3_pat.append(data["pat_q3"])
                     i_q3_rev.append(data["rev_q3"])
 
-                avg_sq4 = np.mean(sq4_pat) if sq4_pat else 0
+                avg_sq4 = safe_mean(sq4_pat)
                 verdict = "Good" if avg_sq4 > 2 else "Bad" if avg_sq4 < -2 else "Neutral"
                 if sub_reported == 0: verdict = "Neutral"
                 
                 ind_subs.append({
                     "name": sub["name"], "stocks": sub_tot, "reported": sub_reported,
                     "beat": sub_beat, "miss": sub_miss, "neutral": sub_neu,
-                    "q3Pat": round(np.mean(sq3_pat), 1) if sq3_pat else 0,
-                    "q4Pat": round(avg_sq4, 1), "verdict": verdict
+                    "q3Pat": safe_mean(sq3_pat),
+                    "q4Pat": avg_sq4, "verdict": verdict
                 })
                 
                 i_tot_stocks += sub_tot; i_reported += sub_reported
                 i_beat += sub_beat; i_miss += sub_miss; i_neu += sub_neu
             
-            avg_iq4 = np.mean(i_q4_pat) if i_q4_pat else 0
+            avg_iq4 = safe_mean(i_q4_pat)
             ind_verdict = "Good" if avg_iq4 > 2 else "Bad" if avg_iq4 < -2 else "Neutral"
             if i_reported == 0: ind_verdict = "Neutral"
             
             sec_inds.append({
                 "name": ind["name"], "totalStocks": i_tot_stocks, "reported": i_reported,
                 "beat": i_beat, "miss": i_miss, "neutral": i_neu,
-                "q3Pat": round(np.mean(i_q3_pat), 1) if i_q3_pat else 0,
-                "q4Pat": round(avg_iq4, 1),
-                "q3Rev": round(np.mean(i_q3_rev), 1) if i_q3_rev else 0,
-                "q4Rev": round(np.mean(i_q4_rev), 1) if i_q4_rev else 0,
+                "q3Pat": safe_mean(i_q3_pat),
+                "q4Pat": avg_iq4,
+                "q3Rev": safe_mean(i_q3_rev),
+                "q4Rev": safe_mean(i_q4_rev),
                 "verdict": ind_verdict, "subIndustries": ind_subs
             })
             
             sec_tot_stocks += i_tot_stocks; sec_reported += i_reported
             sec_beat += i_beat; sec_miss += i_miss; sec_neu += i_neu
 
-        avg_sq4 = np.mean(s_q4_pat) if s_q4_pat else 0
+        avg_sq4 = safe_mean(s_q4_pat)
         sec_verdict = "Good" if avg_sq4 > 2 else "Bad" if avg_sq4 < -2 else "Neutral"
         if sec_reported == 0: sec_verdict = "Neutral"
         
@@ -276,16 +306,16 @@ def generate_earnings():
             "name": sec["name"], "color": sec["color"], "weight": sec["weight"],
             "totalStocks": sec_tot_stocks, "reported": sec_reported,
             "beat": sec_beat, "miss": sec_miss, "neutral": sec_neu,
-            "q3Pat": round(np.mean(s_q3_pat), 1) if s_q3_pat else 0,
-            "q4Pat": round(avg_sq4, 1),
-            "q3Rev": round(np.mean(s_q3_rev), 1) if s_q3_rev else 0,
-            "q4Rev": round(np.mean(s_q4_rev), 1) if s_q4_rev else 0,
-            "q3Ebitda": round(np.mean(s_q3_ebitda), 1) if s_q3_ebitda else 0,
-            "q4Ebitda": round(np.mean(s_q4_ebitda), 1) if s_q4_ebitda else 0,
-            "q3Npm": round(np.mean(s_q3_npm), 1) if s_q3_npm else 0,
-            "q4Npm": round(np.mean(s_q4_npm), 1) if s_q4_npm else 0,
-            "q3Roe": round(np.mean(s_roe), 1) if s_roe else 0,
-            "q4Roe": round(np.mean(s_roe), 1) if s_roe else 0,
+            "q3Pat": safe_mean(s_q3_pat),
+            "q4Pat": avg_sq4,
+            "q3Rev": safe_mean(s_q3_rev),
+            "q4Rev": safe_mean(s_q4_rev),
+            "q3Ebitda": safe_mean(s_q3_ebitda),
+            "q4Ebitda": safe_mean(s_q4_ebitda),
+            "q3Npm": safe_mean(s_q3_npm),
+            "q4Npm": safe_mean(s_q4_npm),
+            "q3Roe": safe_mean(s_roe),
+            "q4Roe": safe_mean(s_roe),
             "verdict": sec_verdict, "industries": sec_inds
         })
         
