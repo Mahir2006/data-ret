@@ -13,16 +13,18 @@ YAHOO_MAP = {
     "KALYAN.NS": "KALYANKJIL.NS", "TVSMOTORS.NS": "TVSMOTOR.NS", "FINOLEX.NS": "FINCABLES.NS", 
     "GMRINFRA.NS": "GMRAIRPORT.NS", "WELSPUNIND.NS": "WELSPUNLIV.NS", "MCDOWELL-N.NS": "UNITDSPR.NS", 
     "MAHINDRAHOLIDAYS.NS": "MHRIL.NS", "CHAMBALFERT.NS": "CHAMBLFERT.NS", "KPR.NS": "KPRMILL.NS", 
-    "IPCA.NS": "IPCALAB.NS", "M&M.NS": "M&M.NS", "BAJAJ-AUTO.NS": "BAJAJ-AUTO.NS"
+    "IPCA.NS": "IPCALAB.NS", "M&M.NS": "M&M.NS", "BAJAJ-AUTO.NS": "BAJAJ-AUTO.NS",
+    "BAGMANE.NS": "BAGMANE.RR", "ICICILIFE.NS": "ICICIPRULI.NS"
 }
 
 # ─── 1. FETCH LIVE NIFTY 500 FROM NSE ───────────────────────────────────────────
 def get_live_nifty_500():
     print("Fetching live Nifty 500 constituents and metadata from NSE...")
     
+    # FIX: Updated to valid working archive domains
     urls = [
-        "https://niftyindices.com/Indexconstituent/ind_nifty500list.csv",
-        "https://archives.nseindia.com/content/indices/ind_nifty500list.csv"
+        "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.csv",
+        "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"
     ]
     
     headers = {
@@ -113,7 +115,6 @@ def generate_breadth_data():
     # Diagnostic Tracking Lists
     missing_from_yahoo = []
     not_enough_days = []
-    missing_date_prices = []
     generic_errors = []
 
     try:
@@ -161,7 +162,8 @@ def generate_breadth_data():
             closes.index = closes.index.tz_localize(None)
         closes.index = pd.to_datetime(closes.index).normalize()
         
-        closes = closes.ffill().dropna(how='all')
+        # FIX 4: Drop empty rows AND empty columns
+        closes = closes.ffill().dropna(how='all').dropna(axis=1, how='all')
 
         valid_cols = [c for c in closes.columns if c != '^NSEI']
         stocks_df = closes[valid_cols].dropna(how='all')
@@ -178,9 +180,11 @@ def generate_breadth_data():
         target_1w = curr_date - pd.Timedelta(days=7)
         target_1m = curr_date - pd.DateOffset(months=1)
         
-        # FIX APPLIED: Safely slice for target dates to avoid the .asof() NaN trap
-        curr_px = stocks_df.iloc[-1]
-        px_1w = stocks_df[stocks_df.index <= target_1w].iloc[-1]
+        # FIX 5: Safely slice for target dates to avoid the .asof() NaN trap and IndexError
+        curr_px = stocks_df.iloc[-1] if not stocks_df.empty else pd.Series(dtype=float)
+        
+        past_1w_df = stocks_df[stocks_df.index <= target_1w]
+        px_1w = past_1w_df.iloc[-1] if not past_1w_df.empty else curr_px
         
         total_tracked = len(valid_cols)
         mul = 500 / total_tracked if total_tracked > 0 else 1
@@ -217,8 +221,12 @@ def generate_breadth_data():
             n_1w = nifty.asof(target_1w)
             n_1m = nifty.asof(target_1m)
             
-            overall["nifty500Change1W"] = round(((n_curr - n_1w) / n_1w) * 100, 2)
-            overall["nifty500Change1M"] = round(((n_curr - n_1m) / n_1m) * 100, 2)
+            # Prevent NaN math if Nifty listing date misses the 1w/1m targets
+            if pd.isna(n_1w): n_1w = n_curr
+            if pd.isna(n_1m): n_1m = n_curr
+                
+            overall["nifty500Change1W"] = round(((n_curr - n_1w) / n_1w) * 100, 2) if n_1w != 0 else 0
+            overall["nifty500Change1M"] = round(((n_curr - n_1m) / n_1m) * 100, 2) if n_1m != 0 else 0
             n_ema50, n_ema200 = nifty.ewm(span=50).mean().iloc[-1], nifty.ewm(span=200).mean().iloc[-1]
             golden_cross = bool(n_ema50 > n_ema200)
             death_cross = bool(n_ema50 < n_ema200)
@@ -249,7 +257,7 @@ def generate_breadth_data():
             above_count = (sec_df.iloc[-1] > ema50[valid_sec_syms].iloc[-1]).sum()
             
             sec_curr_sum = sec_df.iloc[-1].sum()
-            # FIX APPLIED: Reuse the safely calculated px_1w to avoid NaN breaks
+            # Reuse the safely calculated px_1w to avoid NaN breaks
             sec_1w_sum = px_1w[valid_sec_syms].sum() 
             sec_ret = ((sec_curr_sum - sec_1w_sum) / sec_1w_sum) * 100 if sec_1w_sum != 0 else 0
             
@@ -265,7 +273,6 @@ def generate_breadth_data():
         for i in range(11, -1, -1):
             target_date_h = curr_date - pd.Timedelta(days=7 * i)
             
-            # FIX APPLIED: Safely slice dataframes to grab historical data
             past_stocks = stocks_df[stocks_df.index <= target_date_h]
             past_ema = ema50[ema50.index <= target_date_h]
             
@@ -304,9 +311,6 @@ def generate_breadth_data():
             print(f"\n⚠️ Recent IPO / Less than 50 days of history ({len(not_enough_days)}):")
             print(f"   {', '.join(not_enough_days)}")
             
-        if missing_date_prices:
-            print(f"\n📅 Missing historical milestone dates ({len(missing_date_prices)}):")
-            print(f"   {', '.join(missing_date_prices[:10])}" + ("..." if len(missing_date_prices) > 10 else ""))
         print("="*50 + "\n")
             
     except Exception as e:
