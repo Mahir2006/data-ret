@@ -99,19 +99,23 @@ def get_dynamic_quarters():
     year = now.year
     
     if 4 <= month <= 6:
-        curr_q, prev_q = f"Q4 FY{str(year)[2:]}", f"Q3 FY{str(year)[2:]}"
+        # Apr-Jun (Reporting Jan-Mar of previous FY)
+        curr_q, prev_q = f"Q4 FY{str(year-1)[2:]}", f"Q3 FY{str(year-1)[2:]}"
         curr_per, prev_per = "Jan–Mar", "Oct–Dec"
         expected_m, expected_y = 3, year
     elif 7 <= month <= 9:
-        curr_q, prev_q = f"Q1 FY{str(year+1)[2:]}", f"Q4 FY{str(year)[2:]}"
+        # Jul-Sep (Reporting Apr-Jun of current FY)
+        curr_q, prev_q = f"Q1 FY{str(year)[2:]}", f"Q4 FY{str(year-1)[2:]}"
         curr_per, prev_per = "Apr–Jun", "Jan–Mar"
         expected_m, expected_y = 6, year
     elif 10 <= month <= 12:
-        curr_q, prev_q = f"Q2 FY{str(year+1)[2:]}", f"Q1 FY{str(year+1)[2:]}"
+        # Oct-Dec (Reporting Jul-Sep of current FY)
+        curr_q, prev_q = f"Q2 FY{str(year)[2:]}", f"Q1 FY{str(year)[2:]}"
         curr_per, prev_per = "Jul–Sep", "Apr–Jun"
         expected_m, expected_y = 9, year
     else: # Jan to Mar
-        curr_q, prev_q = f"Q3 FY{str(year)[2:]}", f"Q2 FY{str(year)[2:]}"
+        # Jan-Mar (Reporting Oct-Dec of current FY, but year has rolled over)
+        curr_q, prev_q = f"Q3 FY{str(year-1)[2:]}", f"Q2 FY{str(year-1)[2:]}"
         curr_per, prev_per = "Oct–Dec", "Jul–Sep"
         expected_m, expected_y = 12, year - 1
         
@@ -123,7 +127,6 @@ def get_dynamic_quarters():
         "expected_month": expected_m,
         "expected_year": expected_y
     }
-
 def get_yf_sym(sym):
     fixes = {
         "VARDHMAN.NS": "VTL.NS", "FIRSTSOURCE.NS": "FSL.NS", "GUJARATGAS.NS": "GUJGASLTD.NS", 
